@@ -6,6 +6,8 @@ normalizes them into one schema, and answers natural-language questions about ne
 worth, spending, and investments.
 
 Design plan: `FinSight-Design-Plan.md`.
+How it all works, from scratch (start here): [`docs/HOW-IT-WORKS.md`](docs/HOW-IT-WORKS.md).
+Current state, open issues, environment notes: [`docs/PROJECT-STATE.md`](docs/PROJECT-STATE.md).
 Data source validation (read this before writing a parser): [`docs/DATA-SOURCES.md`](docs/DATA-SOURCES.md).
 
 ## Status

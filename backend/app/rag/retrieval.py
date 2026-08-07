@@ -82,13 +82,15 @@ def aggregate_facts(db: Session) -> list[str]:
     for category, amount, count in by_category:
         facts.append(f"Spend by category: {category or 'uncategorized'} = ${amount:,.2f} ({count} txns)")
 
+    # Build the month expression once and reuse the object. Constructing
+    # to_char() separately for SELECT, GROUP BY, and ORDER BY gives each call its
+    # own bind parameter, and Postgres then rejects the query because the grouped
+    # expression is not syntactically identical to the selected one.
+    month = func.to_char(Transaction.txn_date, "YYYY-MM")
     monthly = db.execute(
-        select(
-            func.to_char(Transaction.txn_date, "YYYY-MM"),
-            func.sum(Transaction.amount),
-        )
-        .group_by(func.to_char(Transaction.txn_date, "YYYY-MM"))
-        .order_by(func.to_char(Transaction.txn_date, "YYYY-MM").desc())
+        select(month, func.sum(Transaction.amount))
+        .group_by(month)
+        .order_by(month.desc())
         .limit(12)
     ).all()
     for month, amount in monthly:
