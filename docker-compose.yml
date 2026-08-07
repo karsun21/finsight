@@ -1,0 +1,50 @@
+version: "3.8"
+
+services:
+  db:
+    image: pgvector/pgvector:pg16
+    container_name: finsight-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-finsight}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-change_me_locally}
+      POSTGRES_DB: ${POSTGRES_DB:-finsight}
+    ports:
+      # Host 5433 by default so this never fights a local Postgres on 5432.
+      - "${POSTGRES_PORT:-5433}:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./db/init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-finsight}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  api:
+    build: ./backend
+    container_name: finsight-api
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: ${DATABASE_URL:-postgresql+psycopg://finsight:change_me_locally@db:5432/finsight}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY}
+      CHAT_MODEL: ${CHAT_MODEL:-claude-sonnet-5}
+      CLASSIFY_MODEL: ${CLASSIFY_MODEL:-claude-haiku-4-5}
+      EMBEDDING_MODEL: ${EMBEDDING_MODEL:-sentence-transformers/all-MiniLM-L6-v2}
+      INBOX_DIR: /inbox
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./backend:/srv
+      # Statements are mounted read-only: the pipeline reads, it never rewrites your originals.
+      - ./inbox:/inbox:ro
+      # Cache the embedding model between container rebuilds (~90MB download otherwise).
+      - hfcache:/root/.cache/huggingface
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+
+volumes:
+  pgdata:
+  hfcache:

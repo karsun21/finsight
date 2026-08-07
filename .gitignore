@@ -1,0 +1,42 @@
+# Secrets
+.env
+*.pem
+*.key
+
+# Financial data — NEVER commit
+inbox/*/*
+!inbox/*/.gitkeep
+data/
+*.pdf
+*.csv
+*.xlsx
+*.xls
+*.qfx
+*.ofx
+*.qbo
+# ...except synthetic test fixtures, which contain no real data
+!backend/tests/fixtures/**
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+
+# Models cache (sentence-transformers)
+.cache/
+models/
+
+# Node
+node_modules/
+dist/
+.vite/
+
+# OS / editor
+.DS_Store
+.idea/
+.vscode/
