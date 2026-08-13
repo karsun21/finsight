@@ -1,9 +1,15 @@
+from collections import Counter
 from datetime import date
 from decimal import Decimal
 
 import pytest
 
-from app.ingestion.dedup import normalize_description, transaction_hash
+from app.ingestion.dedup import (
+    file_hash,
+    normalize_description,
+    occurrence_hash,
+    transaction_hash,
+)
 from app.rag.router import route
 
 
@@ -27,6 +33,75 @@ def test_different_amounts_do_not_collide():
 
 def test_normalize_strips_reference_numbers():
     assert normalize_description("SHELL OIL #12345678") == "SHELL OIL"
+
+
+# --- identical charges within one file ---------------------------------------
+
+
+def _digests_for(descriptions):
+    """Mirror the digest sequence _persist() builds for one file's transactions."""
+    occurrences: Counter[str] = Counter()
+    digests = []
+    for description in descriptions:
+        base = transaction_hash("Capital One", date(2026, 3, 4), Decimal("-3.50"), description)
+        digests.append(occurrence_hash(base, occurrences[base]))
+        occurrences[base] += 1
+    return digests
+
+
+def test_occurrence_zero_is_the_base_digest_unchanged():
+    """The overwhelmingly common case must hash exactly as it did before
+    occurrence indexing existed."""
+    base = transaction_hash("DCU", date(2026, 3, 4), Decimal("-10.00"), "COFFEE")
+    assert occurrence_hash(base, 0) == base
+
+
+def test_two_identical_charges_get_distinct_digests():
+    """Two $3.50 coffees at the same shop on the same day are both real. Before
+    this they produced one digest, the unique constraint rejected the batch, and
+    the whole ingest 500'd."""
+    first, second = _digests_for(["BLUE BOTTLE COFFEE", "BLUE BOTTLE COFFEE"])
+    assert first != second
+
+
+def test_reingesting_the_same_file_reproduces_the_same_digests():
+    """Idempotence: the occurrence index is per-file, so a second run generates
+    the identical sequence and every row is recognized as already present. If it
+    were derived from the database instead, run two would insert duplicates."""
+    rows = ["BLUE BOTTLE COFFEE", "BLUE BOTTLE COFFEE", "CHIPOTLE"]
+    assert _digests_for(rows) == _digests_for(rows)
+
+
+def test_three_identical_charges_all_stay_distinct():
+    assert len(set(_digests_for(["COFFEE"] * 3))) == 3
+
+
+# --- file-level fingerprinting -----------------------------------------------
+
+
+def test_renamed_copy_of_a_file_hashes_identically(tmp_path):
+    """Capital One names every export the same thing, and the old check was on
+    filename — so month two looked like month one and was silently skipped.
+    Contents are what actually decide."""
+    original = tmp_path / "transactions.csv"
+    renamed = tmp_path / "capital_one_2026-07.csv"
+    body = "Transaction Date,Description\n2026-07-01,CHIPOTLE\n"
+    original.write_text(body)
+    renamed.write_text(body)
+    assert file_hash(original) == file_hash(renamed)
+
+
+def test_same_name_different_contents_hashes_differently(tmp_path):
+    """The case that was actually broken: two months of exports, same filename,
+    different rows. These must not collide or the second month is lost."""
+    march = tmp_path / "march" / "transactions.csv"
+    april = tmp_path / "april" / "transactions.csv"
+    for path in (march, april):
+        path.parent.mkdir()
+    march.write_text("Transaction Date,Description\n2026-03-01,CHIPOTLE\n")
+    april.write_text("Transaction Date,Description\n2026-04-01,KROGER\n")
+    assert march.name == april.name
+    assert file_hash(march) != file_hash(april)
 
 
 @pytest.mark.parametrize(

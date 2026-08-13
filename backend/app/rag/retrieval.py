@@ -1,3 +1,4 @@
+import calendar
 from decimal import Decimal
 
 from sqlalchemy import func, select
@@ -58,6 +59,49 @@ def latest_holdings_snapshot(db: Session) -> list[tuple[str, str, Decimal | None
     return [(name, ticker, value) for name, ticker, value in rows]
 
 
+def _coverage_facts(db: Session) -> list[str]:
+    """State the window the data actually spans, and flag partial months.
+
+    Without this the rollups are correct and the conclusions drawn from them are
+    not. Statement exports open and close mid-cycle, so the first and last
+    calendar months hold a fraction of a month's spending. Handed a bare "July =
+    $364.58" next to "June = $1,017.04", the model reports a 65% collapse in
+    spending, confidently and wrongly. Nothing in the numbers reveals that July
+    is eleven days long — so the fact has to be said out loud.
+    """
+    first, last, count = db.execute(
+        select(
+            func.min(Transaction.txn_date),
+            func.max(Transaction.txn_date),
+            func.count(Transaction.id),
+        )
+    ).one()
+
+    if first is None:
+        return ["Transaction data: none ingested yet."]
+
+    facts = [
+        f"Transaction data covers {first.isoformat()} to {last.isoformat()} "
+        f"({count} transactions). Nothing outside that window is known."
+    ]
+
+    partial = []
+    if first.day != 1:
+        partial.append(first.strftime("%Y-%m"))
+    if last.day != calendar.monthrange(last.year, last.month)[1]:
+        partial.append(last.strftime("%Y-%m"))
+    # dict.fromkeys dedupes while keeping order, for the single-partial-month case.
+    partial = list(dict.fromkeys(partial))
+
+    if partial:
+        facts.append(
+            f"Partial months, covering only part of the month: {', '.join(partial)}. "
+            "Their totals are not comparable to full months and must not be described "
+            "as a rise or fall in spending."
+        )
+    return facts
+
+
 def aggregate_facts(db: Session) -> list[str]:
     """Deterministic SQL rollups for aggregate-shaped questions.
 
@@ -73,6 +117,8 @@ def aggregate_facts(db: Session) -> list[str]:
         if value is not None:
             share = (value / total * 100) if total else Decimal(0)
             facts.append(f"Holding: {name} {ticker} = ${value:,.2f} ({share:.1f}% of investments)")
+
+    facts.extend(_coverage_facts(db))
 
     by_category = db.execute(
         select(Transaction.category, func.sum(Transaction.amount), func.count())

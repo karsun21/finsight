@@ -35,12 +35,55 @@ your employer's stock, you're opening five tabs and doing arithmetic by hand.
 
 FinSight is a program that:
 
-1. **Reads** the CSV and PDF files those five institutions let you download
-2. **Normalizes** them — turns five different formats into one consistent shape
+1. **Reads** the files those institutions let you download
+2. **Normalizes** them — turns different formats into one consistent shape
 3. **Stores** them in a single database on your laptop
 4. **Answers questions about them in plain English**
 
 That last part is the interesting one, and it's where RAG comes in.
+
+### 1.1 Scope: two sources automated, three entered by hand
+
+The five institutions are **not** treated equally, and that's a deliberate
+decision rather than unfinished work.
+
+| | Institutions | How data arrives | Why |
+|---|---|---|---|
+| **Automated** | DCU (cash), Capital One (credit) | CSV → `inbox/` → parser → `transactions` | This is where *spending* lives, it changes daily, and it's thousands of rows. Automation earns its keep. |
+| **Manual** | Vanguard, Fidelity, Morgan Stanley | A holdings snapshot entered by hand, quarterly | These are *balances*, not events. They move slowly, they're a handful of rows, and their export formats are the three worst in the set. |
+
+The reasoning: parsers three, four, and five would add no new architecture — each
+is another "read a file, rename the columns, flip a sign." They'd also be the most
+expensive ones to write. Vanguard's CSV has multiple sections stacked in one file.
+Morgan Stanley is `.xlsx` and needs two separate reports. Fidelity's CSV is
+activity-only, so the per-fund 401(k) balances that actually matter for net worth
+exist **only** in a quarterly PDF statement.
+
+Against that: a 401(k) balance changes slowly, and you care about it four times a
+year. Hand-entering a few rows a quarter beats writing and maintaining a PDF
+parser to extract the same numbers.
+
+**This does not drop net worth from the project.** The `holdings` table
+(`models.py:52`) is already keyed on `(institution, as_of_date, ticker)` —
+explicitly designed as point-in-time snapshots, with net worth over time being a
+series of them. It does not care whether a snapshot came from a parser or from
+you typing it. Every downstream feature — `/net-worth`, `/allocation`, the SQL
+rollups the chat router uses — works identically either way.
+
+**What this scope also removes,** and shouldn't be reintroduced without a reason:
+
+| Dropped | Why |
+|---|---|
+| The scikit-learn categorizer | Target granularity is coarse — "dining", "travel", "groceries", not "coffee specifically". ~15 regex rules cover that. An ML model earns its place only at fine granularity. |
+| Two-stage "semantic filter → SQL aggregate" retrieval | It existed to answer "how much on coffee" when coffee isn't a category. At coarse granularity every spending question is a `GROUP BY category`, which the aggregate path already does correctly over *all* rows. |
+| PDF parsers, all institutions | Optional historical backfill. Nothing in the target scope needs them. |
+
+The semantic/vector path stays — see §4.6 for what its job actually is now.
+
+**What this scope makes *more* important:** the category taxonomy. When the
+product is coarse buckets, the bucket labels *are* the product. The taxonomy is
+`CATEGORIES` in `classification/rules.py`, and Stage 6 of §5 explains how a row
+gets assigned to one.
 
 **Everything runs on your machine.** There's no cloud service, no account to sign
 up for, no company holding your financial data. The one exception is that when you
@@ -170,15 +213,18 @@ four:
 
 | Table | What's in it |
 |---|---|
-| `institutions` | Five rows, one per bank. Seeded automatically at startup. |
-| `transactions` | One row per purchase, payment, deposit — money moving. |
-| `holdings` | One row per investment position at a point in time — money sitting. |
-| `ingestion_log` | One row per file processed. Audit trail: what worked, what failed. |
+| `institutions` | Five rows, one per bank. Seeded automatically at startup (`registry.py:28`). All five stay seeded even though only two are automated — the investment institutions still own their manually-entered holdings. |
+| `transactions` | One row per purchase, payment, deposit — money moving. Fed by DCU + Capital One. |
+| `holdings` | One row per investment position at a point in time — money sitting. Fed by hand, quarterly. |
+| `ingestion_log` | One row per file processed, including its content hash. Audit trail *and* the "have I seen this file?" check. |
 
-The `transactions` / `holdings` split matters. A transaction is an *event* ("on
-March 4th, $42.10 left my account"). A holding is a *snapshot* ("as of March 31st,
-I owned 12.4 shares of VTSAX worth $1,800"). Net worth comes from holdings; spending
-comes from transactions. Different shapes, different questions, different tables.
+The `transactions` / `holdings` split matters, and it's what makes the scope
+decision in §1.1 cheap. A transaction is an *event* ("on March 4th, $42.10 left my
+account"). A holding is a *snapshot* ("as of March 31st, I owned 12.4 shares of
+VTSAX worth $1,800"). Net worth comes from holdings; spending comes from
+transactions. Different shapes, different questions, different tables — and
+different rates of change, which is exactly why one side is worth automating and
+the other isn't.
 
 ### pgvector
 
@@ -300,15 +346,20 @@ a *writer*, not a calculator. More on why in section 6.
 - `CLASSIFY_MODEL=claude-haiku-4-5` — cheaper model reserved for simple
   classification (not used yet; the rule-based categorizer handles that for now)
 
-### scikit-learn
+### scikit-learn — vestigial, slated for removal
 
 **What it is.** A classical machine-learning library.
 
-**Why it's here.** It's in the dependency list for a *future* phase: training a
-model to categorize transactions from your corrections. Right now categorization
-is done by a list of regular expressions in `classification/rules.py`. That's
-intentional — a machine learning model needs thousands of labeled examples to
-learn from, and you don't have any yet. The rules generate them.
+**Why it's here.** It isn't, anymore. It's still listed in
+`backend/pyproject.toml:20` from when the plan included training a categorizer on
+your hand-corrections, but the scope decision in §1.1 dropped that. Nothing
+imports it. Categorization is a list of regular expressions in
+`classification/rules.py`, and at coarse granularity that's sufficient — an ML
+model earns its place when you need "coffee" separated from "dining", and you
+don't.
+
+Dropping the dependency would meaningfully shrink the Docker image. Left in for
+now because the image is already built and cached.
 
 ---
 
@@ -530,6 +581,28 @@ path produced an answer:
 {"answer": "...", "route": "aggregate", "rows_used": 47}
 ```
 
+### 4.7 What the semantic path is actually for here
+
+Section 4.2 used *"how much do I spend on coffee?"* to motivate embeddings,
+because it's the cleanest illustration of why matching letters fails. Keep the
+lesson, but note that it is **no longer a question this project targets** — under
+the coarse-category scope (§1.1), coffee isn't a category, and "how much" routes
+to SQL anyway.
+
+So what does the semantic path earn its place doing? **Lookup, not totals:**
+
+- *"What was that charge from Chipotle?"*
+- *"Did I pay for parking at the airport in March?"*
+- *"What's that recurring thing that starts with SQ?"*
+
+These need a handful of specific rows pulled out of thousands, identified by
+meaning rather than by an exact string you'd have to already know. That's what
+vector search is genuinely good at, and it's why the path stays even though the
+headline features route around it.
+
+The distinction to hold onto: **semantic search is for finding rows, SQL is for
+counting them.** Both are here because both jobs exist.
+
 ---
 
 ## 5. Following one transaction all the way through
@@ -569,13 +642,21 @@ that one function.
 The pipeline walks each institution folder (`pipeline.py:38`). For each file it
 finds, it asks two questions:
 
-**"Have I already done this one?"** — `_already_ingested()` at `pipeline.py:89`
-checks the `ingestion_log` table for a successful run on that filename. If found,
-skip.
+**"Have I already done this one?"** — the file's **contents** are sha256'd
+(`dedup.py`, `file_hash()`), and `_already_ingested()` checks the `ingestion_log`
+table for a successful run carrying that hash. If found, skip.
 
-> ⚠️ This check is **filename-only**. Capital One names every export the same
-> thing, so your second month's file gets silently skipped. Rename each export
-> with a date — `capital_one_2026-03.csv` — until this is fixed.
+Contents rather than filename, because Capital One names every export
+`transactions.csv`. A name-based check — which is what this used to be — meant the
+second month's download looked like one already processed and was silently
+skipped: `files_seen` incremented and nothing else happened. Hashing the bytes
+gets both directions right:
+
+- A **renamed copy** of a file already ingested → same hash → skipped, no work.
+- A **same-named file with different rows** → different hash → processed.
+
+Date-stamping your exports on the way in is still a good habit for your own sake,
+but it's no longer load-bearing.
 
 **"What parser handles this?"** — `resolve()` in `ingestion/registry.py:44` looks
 up the folder in a dictionary:
@@ -645,32 +726,92 @@ collapse to the same string, produce the same hash, and become one row.
 The `dedup_hash` column also has a **unique constraint** in the database, so even
 if the application logic somehow missed it, Postgres refuses the duplicate.
 
-> ⚠️ The flip side: the check only looks at rows *already in the database*, not at
-> other rows in the same file. Two genuinely identical charges on the same day —
-> two $3.50 coffees at the same shop — produce the same hash, and the unique
-> constraint rejects the whole batch. Known issue, small fix.
+**The identical-charges problem.** Two $3.50 coffees at the same shop on the same
+day are indistinguishable under that fingerprint — same institution, same date,
+same amount, same description. Both are real charges, so neither of the obvious
+answers is acceptable: letting them collide makes the unique constraint reject the
+entire batch, and dropping the second understates your spending.
+
+So the **occurrence index within the file** becomes part of the key
+(`dedup.py`, `occurrence_hash()`). The first identical row hashes to the base
+digest unchanged; the second hashes `base#1`; the third `base#2`.
+
+The subtle part is *where the index comes from*. It's counted per file, not from
+what's already in the database. That's what keeps re-ingestion idempotent:
+
+| | Occurrence indices generated | Result |
+|---|---|---|
+| Drop a file with two coffees | 0, 1 | both inserted |
+| Drop the **same file again** | 0, 1 | both found, both skipped ✓ |
+| Later file overlaps, has both | 0, 1 | both found, both skipped ✓ |
+| Earlier file had one, later has two | 0, 1 | first skipped, second inserted ✓ |
+
+Had the index been derived from the database instead, the second ingest would see
+occurrence 0 taken, insert at occurrence 1, and duplicate the very row it was
+supposed to recognize.
+
+Holdings work differently on purpose: one position per (institution, snapshot
+date, ticker) is the entire point of that key, so a repeat inside one file is a
+malformed statement rather than a second real position. Those are skipped and
+counted as duplicates.
 
 ### Stage 6 — Categorize
 
 `pipeline.py:118`:
 
 ```python
-category=txn.category or categorize(txn.description)
+category=resolve_category(txn.description, txn.category)
 ```
 
-If the parser already produced a category, use it. Otherwise run
-`classification/rules.py:31`, which tests the description against an ordered list
-of regular expressions and returns the first match — `CHIPOTLE|STARBUCKS|DOORDASH|…`
-→ `"dining"`, and so on. No match returns `None`, which is honest: the row stays
-uncategorized rather than getting a wrong label.
+Two things can suggest a category: the merchant description, and whatever label
+the issuer shipped in its own export. `resolve_category()` in
+`classification/rules.py` decides between them, in this order:
 
-For Capital One the `or` short-circuits, because Capital One ships its own merchant
-categories.
+1. **Description rules first.** An ordered list of regular expressions, first
+   match wins — `CHIPOTLE|STARBUCKS|DOORDASH|…` → `"dining"`.
+2. **Issuer label as fallback,** mapped through `ISSUER_CATEGORIES` onto the
+   project's own vocabulary (`merchandise` → `shopping`, `airfare` → `travel`).
+3. **`None`.** No match anywhere. This is a real answer, not a failure — an
+   uncategorized row is recoverable, a confidently wrong bucket silently
+   corrupts every spending total that follows.
 
-> ⚠️ This creates a taxonomy split. Capital One's labels ("Other Services",
-> "Merchandise") and the rule labels ("subscriptions", "groceries") are different
-> vocabularies, so a spending breakdown will contain both. Netflix arrives as
-> `other services` rather than `subscriptions`. Worth reconciling later.
+**Why descriptions beat the issuer.** This used to read
+`txn.category or categorize(...)`, which looks harmless and was the worst bug in
+the project. Capital One ships a category on every row, so the `or` short-circuited
+and the rules *never ran at all* for card transactions. Two vocabularies ended up
+in one column: `KROGER #421` was filed as `merchandise` instead of `groceries`,
+`NETFLIX.COM` as `other services` instead of `subscriptions`. Under the
+coarse-category scope (§1.1) **category is the entire product** — every spending
+question is a `GROUP BY category` — so issuer labels being the wrong vocabulary
+isn't cosmetic.
+
+Some issuer labels map to nothing on purpose. `other`, `other services`, and
+`professional services` are grab bags carrying no real signal, so they're recorded
+as an explicit `None` in the map. That's deliberately distinct from a label that's
+simply *missing* from the map — an unrecognized label gets logged once with a
+warning, so when your real export contains a category we've never seen you find
+out from the logs instead of from a pile of silent NULLs.
+
+> ⚠️ **Timing:** the resolved category is baked into the text that gets embedded
+> in Stage 7, so changing categorization rules after ingesting means
+> **re-ingesting**, not just an `UPDATE`. Get the taxonomy roughly right before
+> loading real history.
+
+**One trap worth knowing about, because it will come back.** The rules match
+against the uppercased description with `re.search`, so a short pattern matches
+*inside longer words*. Every one of these was live at some point:
+
+| Pattern | Silently matched | Result |
+|---|---|---|
+| `MTA` | `CAPITAL ONE MOBILE PY`**`MTA`**`UTHDATE` | a card payment counted as transport |
+| `ATM` | `SPINE TRE`**`ATM`**`ENT CENTER` | a medical bill counted as a cash withdrawal |
+| `ACH` | `CO`**`ACH`** ` OUTLET`, `BE`**`ACH`** ` CLUB` | retail counted as a transfer |
+| `FEE` | `PEETS COF`**`FEE`** | coffee counted as a bank fee |
+| `RENT` | `AVIS `**`RENT`**` A CAR` | a rental car counted as housing |
+
+All five are now `\b`-anchored, and `tests/test_categorization.py` pins each one.
+The failure mode is what makes this nasty: nothing errors, the row just lands in
+the wrong bucket and the totals are quietly wrong.
 
 ### Stage 7 — Embed
 
@@ -779,11 +920,14 @@ drop a file into, not by inspecting its contents. Content-sniffing five
 institutions' formats would be fragile and would need updating every time a bank
 changed a header. Choosing a folder is unambiguous and takes you one second.
 
-**2. Dedup is what makes the two-source strategy safe.** Recent data comes from
-CSVs, history from PDFs, and they overlap. Without normalize-then-hash, backfilling
-would duplicate everything. This is why `dedup.py` strips reference numbers before
-hashing — that's not a detail, it's the thing that makes the whole ingestion
-strategy viable.
+**2. Dedup is what makes overlapping exports safe.** Capital One's CSV export is
+capped at ~90 days, so you pull it month by month and the windows overlap — the
+same charge arrives in two files. Without normalize-then-hash you'd double-count
+every overlap. (The original motivation was CSV-vs-PDF backfill, where the same
+transaction renders differently in each format; PDFs are now optional per §1.1,
+but overlapping CSV windows keep the requirement alive either way.) This is why
+`dedup.py` strips trailing reference numbers before hashing — not a detail, it's
+what makes re-dropping a file a no-op instead of a corruption.
 
 **3. Route before you retrieve.** Covered in 4.6. The single most important idea in
 the project: aggregate questions get SQL, lookup questions get vectors, and the LLM
@@ -815,7 +959,8 @@ docs/HOW-IT-WORKS.md        This document
 db/init/01_init.sql         Enables the pgvector extension. Runs once, ever.
 
 inbox/                      Drop zone. One folder per institution. Gitignored.
-  capital_one/  dcu/  vanguard/  fidelity/  morgan_stanley/
+  capital_one/  dcu/          ← the two active ones
+  vanguard/  fidelity/  morgan_stanley/   ← kept but unused; see §1.1
 
 backend/
   Dockerfile                How the API image is built
@@ -842,11 +987,11 @@ backend/
       dedup.py              Fingerprinting, so re-dropping a file is a no-op
       pipeline.py           ★★ The orchestrator. The most important file here.
       parsers/
-        capital_one.py      ✅ CSV implemented + tested. PDF is a stub.
-        dcu.py              🚧 Stub. Next to be written.
-        vanguard.py         🚧 Stub. Multi-section CSV — read the docstring.
-        fidelity.py         🚧 Stub.
-        morgan_stanley.py   🚧 Stub. Excel, not CSV.
+        capital_one.py      ✅ CSV implemented + tested. PDF is a stub (optional).
+        dcu.py              🚧 Stub. THE next thing to write — see §1.1.
+        vanguard.py         ⬜ Descoped. Holdings entered by hand instead.
+        fidelity.py         ⬜ Descoped. Balances are PDF-only; hand-entered.
+        morgan_stanley.py   ⬜ Descoped. Excel, two reports; hand-entered.
 
     classification/
       rules.py              Regex → category. The Phase 1 categorizer.
@@ -870,31 +1015,55 @@ flow), `rag/router.py` (the key idea), `rag/retrieval.py` (both query paths).
 
 ## 9. What's built and what isn't
 
+Everything marked ✅ has actually been run end to end on this machine, against a
+synthetic fixture. **The database is currently empty** — no real financial data has
+been ingested yet.
+
 | | Status |
 |---|---|
 | Docker setup, Postgres + pgvector | ✅ Done |
 | Database schema, auto-created at startup | ✅ Done |
 | Ingestion pipeline (scan→parse→dedup→classify→embed→insert) | ✅ Done |
 | Capital One CSV parser | ✅ Done, tested |
-| Dedup with cross-format normalization | ✅ Done, tested |
-| Rule-based categorizer | ✅ Done |
+| Dedup with cross-format normalization | ✅ Done, tested (both layers) |
+| Rule-based categorizer, 17-bucket taxonomy | ✅ Done, tested — rules beat issuer labels, `travel` bucket added |
 | REST endpoints | ✅ Done |
-| RAG chat with routing | ✅ Built, not yet tested on real data |
-| DCU parser | 🚧 Stub — next |
-| Vanguard / Fidelity / Morgan Stanley parsers | 🚧 Stubs — Phase 2 |
-| All PDF parsers | 🚧 Stubs — backfill, Phase 2 |
+| RAG chat with routing | ✅ Both routes verified on synthetic data |
+| DCU parser | 🚧 Stub — **the next thing to build**, and now half the pipeline |
+| Manual holdings entry (Vanguard / Fidelity / Morgan Stanley) | ⬜ Not started — the remaining half of net worth |
 | Cash balances in net worth | ⬜ Needs the DCU parser first |
-| scikit-learn categorizer | ⬜ Phase 2 — needs labeled data first |
+| Vanguard / Fidelity / Morgan Stanley parsers | ⬜ Descoped, see §1.1 |
+| All PDF parsers | ⬜ Descoped — optional backfill only |
+| scikit-learn categorizer | ⬜ Dropped, see §1.1 |
 | Scheduled jobs (weekly summary, anomaly detection) | ⬜ Not started |
-| React frontend | ⬜ Phase 3 |
+| React frontend | ⬜ Phase 3 (blocked locally: Node 16, Vite needs 18+) |
 
-**Known issues to fix soon** (all flagged with ⚠️ above):
+**Known issues, in priority order** (all flagged with ⚠️ above):
 
-1. `pipeline.py:89` skips files by name only → same-named exports get silently
-   ignored. Workaround: date-stamp your filenames.
-2. `pipeline.py:101` doesn't dedup within a single file → two identical same-day
-   charges cause the whole ingest to fail.
-3. Capital One's categories and the rule categories are different vocabularies.
+1. ~~`pipeline.py:118` — Capital One's categories bypass the rule categorizer.~~
+   **Fixed.** Rules now run first and the issuer label is a mapped fallback;
+   `travel` and `insurance`/`entertainment` buckets added; five substring
+   mismatches found and anchored along the way. See Stage 6 of §5.
+2. ~~`pipeline.py:89` skips files by name only.~~ **Fixed.** The check is now a
+   sha256 of file contents, recorded in `ingestion_log.file_hash`. See Stage 3.
+3. ~~`pipeline.py:101` doesn't dedup within a single file.~~ **Fixed.** Identical
+   same-day charges are stored at successive occurrence indices instead of
+   colliding, and persistence is now wrapped so a constraint violation logs a
+   failed file rather than 500-ing the run and abandoning the rest of the inbox.
+   See Stage 5.
+4. **Semantic path truncates silently** — `retrieval.py` returns exactly
+   `retrieval_top_k` (20) rows with no signal that more matched, so Claude can sum
+   20 of 30 relevant rows and state a confident wrong total. Cheap mitigation: when
+   the result length equals `k`, tell the LLM the list was truncated. Lower
+   priority now that coarse questions route to SQL.
+5. **`/net-worth` excludes cash and says so** (`includes_cash: false`). Correct
+   behavior, but net worth stays incomplete until both the DCU parser and the
+   manual holdings snapshots exist.
+
+**One structural risk worth naming:** `main.py:33` uses `create_all()`, which
+creates missing tables but never migrates existing ones. There is no Alembic
+history and no backup. Switch to migrations before there is real data worth
+keeping.
 
 ---
 

@@ -64,8 +64,10 @@ class CapitalOneCSVParser(BaseParser):
                     ),
                     description=str(row["description"]).strip(),
                     amount=amount,
-                    # Capital One ships its own merchant category; keep it as the
-                    # starting label rather than re-deriving it from the description.
+                    # Capital One ships its own merchant category. Passed through
+                    # verbatim: it is the issuer's vocabulary, not the project's,
+                    # and resolve_category() decides whether to use it (only as a
+                    # fallback when no description rule matches).
                     category=(str(row["category"]).strip().lower() or None)
                     if row.get("category")
                     else None,

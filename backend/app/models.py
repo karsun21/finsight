@@ -76,6 +76,11 @@ class IngestionLog(Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     file_name: Mapped[str] = mapped_column(Text)
+    # sha256 of the file's contents. This, not file_name, is what decides whether
+    # a file has already been ingested — Capital One names every export the same
+    # thing, so a name-based check silently swallows every month after the first.
+    # Nullable because a file we cannot read still deserves a log row.
+    file_hash: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
     institution_id: Mapped[int | None] = mapped_column(
         ForeignKey("institutions.id"), nullable=True
     )

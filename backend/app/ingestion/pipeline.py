@@ -1,14 +1,16 @@
 """Inbox scan -> parse -> normalize -> dedup -> classify -> embed -> insert."""
 
 import logging
+from collections import Counter
 from pathlib import Path
 
 from sqlalchemy import select
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
-from app.classification.rules import categorize
+from app.classification.rules import resolve_category
 from app.config import get_settings
-from app.ingestion.dedup import holding_hash, transaction_hash
+from app.ingestion.dedup import file_hash, holding_hash, occurrence_hash, transaction_hash
 from app.ingestion.registry import FOLDER_TO_INSTITUTION, INSTITUTIONS, resolve
 from app.models import Holding, IngestionLog, Institution, Transaction
 from app.rag.embeddings import embed_texts, holding_to_text, transaction_to_text
@@ -45,12 +47,19 @@ def ingest_inbox(db: Session, inbox: Path | None = None) -> IngestResult:
                 continue
             result.files_seen += 1
 
-            if _already_ingested(db, path.name):
+            # Contents, not filename — see dedup.file_hash. A renamed copy of an
+            # already-ingested file is skipped here; a same-named file with new
+            # rows is not.
+            digest = file_hash(path)
+            if _already_ingested(db, digest):
                 continue
 
             parser = resolve(folder, path)
             if parser is None:
-                _log_file(db, path.name, None, None, "skipped", 0, 0, "no parser for this format")
+                _log_file(
+                    db, path.name, digest, None, None, "skipped", 0, 0,
+                    "no parser for this format",
+                )
                 result.failures.append(f"{path.name}: no parser")
                 continue
 
@@ -60,18 +69,34 @@ def ingest_inbox(db: Session, inbox: Path | None = None) -> IngestResult:
             except Exception as exc:  # noqa: BLE001 — one bad file must not stop the run
                 log.exception("parse failed for %s", path)
                 _log_file(
-                    db, path.name, institution_id, type(parser).__name__, "failed", 0, 0, str(exc)
+                    db, path.name, digest, institution_id, type(parser).__name__,
+                    "failed", 0, 0, str(exc),
                 )
                 result.failures.append(f"{path.name}: {exc}")
                 continue
 
-            inserted, duplicate = _persist(
-                db, parsed, institution_id, institution_name, path.name
-            )
+            # Persistence gets the same treatment parsing does. It used to run
+            # bare, so a single constraint violation escaped as a 500 from
+            # /ingest and abandoned every remaining file in the inbox.
+            try:
+                inserted, duplicate = _persist(
+                    db, parsed, institution_id, institution_name, path.name
+                )
+            except SQLAlchemyError as exc:
+                db.rollback()  # leave the session usable for the next file
+                log.exception("persist failed for %s", path)
+                _log_file(
+                    db, path.name, digest, institution_id, type(parser).__name__,
+                    "failed", 0, 0, str(exc),
+                )
+                result.failures.append(f"{path.name}: {exc}")
+                continue
+
             status = "partial" if parsed.warnings else "success"
             _log_file(
                 db,
                 path.name,
+                digest,
                 institution_id,
                 type(parser).__name__,
                 status,
@@ -86,11 +111,16 @@ def ingest_inbox(db: Session, inbox: Path | None = None) -> IngestResult:
     return result
 
 
-def _already_ingested(db: Session, file_name: str) -> bool:
+def _already_ingested(db: Session, digest: str) -> bool:
+    """Has this exact file content already been processed successfully?
+
+    Only success/partial count, so a file that failed to parse is retried on the
+    next run once its parser is fixed.
+    """
     return (
         db.scalar(
             select(IngestionLog.id)
-            .where(IngestionLog.file_name == file_name)
+            .where(IngestionLog.file_hash == digest)
             .where(IngestionLog.status.in_(("success", "partial")))
             .limit(1)
         )
@@ -102,9 +132,17 @@ def _persist(db, parsed, institution_id: int, institution_name: str, file_name: 
     """Insert rows whose dedup hash is new. Returns (inserted, duplicate)."""
     inserted = duplicate = 0
 
+    # How many times each base fingerprint has been seen *in this file*. Two
+    # genuinely identical charges on one day are a real thing (two coffees at the
+    # same shop), so the second is stored at occurrence 1 rather than dropped or
+    # allowed to collide. See dedup.occurrence_hash.
+    occurrences: Counter[str] = Counter()
+
     txn_rows: list[Transaction] = []
     for txn in parsed.transactions:
-        digest = transaction_hash(institution_name, txn.txn_date, txn.amount, txn.description)
+        base = transaction_hash(institution_name, txn.txn_date, txn.amount, txn.description)
+        digest = occurrence_hash(base, occurrences[base])
+        occurrences[base] += 1
         if db.scalar(select(Transaction.id).where(Transaction.dedup_hash == digest)):
             duplicate += 1
             continue
@@ -115,15 +153,25 @@ def _persist(db, parsed, institution_id: int, institution_name: str, file_name: 
                 posted_date=txn.posted_date,
                 description=txn.description,
                 amount=txn.amount,
-                category=txn.category or categorize(txn.description),
+                category=resolve_category(txn.description, txn.category),
                 source_file=file_name,
                 dedup_hash=digest,
             )
         )
 
+    # Holdings get a plain in-batch set rather than occurrence indexing: one
+    # position per (institution, snapshot date, ticker) is the whole point of the
+    # key, so a repeat inside one file is a malformed statement, not a second
+    # real position. Skip it instead of letting it collide.
+    seen_holdings: set[str] = set()
+
     hold_rows: list[Holding] = []
     for holding in parsed.holdings:
         digest = holding_hash(institution_name, holding.as_of_date, holding.ticker)
+        if digest in seen_holdings:
+            duplicate += 1
+            continue
+        seen_holdings.add(digest)
         if db.scalar(select(Holding.id).where(Holding.dedup_hash == digest)):
             duplicate += 1
             continue
@@ -164,10 +212,11 @@ def _persist(db, parsed, institution_id: int, institution_name: str, file_name: 
     return inserted, duplicate
 
 
-def _log_file(db, file_name, institution_id, parser, status, rows, dupes, error):
+def _log_file(db, file_name, file_digest, institution_id, parser, status, rows, dupes, error):
     db.add(
         IngestionLog(
             file_name=file_name,
+            file_hash=file_digest,
             institution_id=institution_id,
             parser=parser,
             status=status,

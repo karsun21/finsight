@@ -1,9 +1,16 @@
 # FinSight
 
-Personal finance RAG assistant. Ingests statement exports from five financial
-institutions (DCU, Capital One, Vanguard, Fidelity NetBenefits, Morgan Stanley),
-normalizes them into one schema, and answers natural-language questions about net
-worth, spending, and investments.
+Personal finance RAG assistant. Ingests statement exports from your bank and
+credit card, normalizes them into one schema, and answers natural-language
+questions about spending and net worth — running entirely on your own machine
+except for the one API call that phrases the answer.
+
+Transaction ingestion is automated for **DCU** (cash) and **Capital One**
+(credit). Investment balances from Vanguard, Fidelity, and Morgan Stanley are
+entered as hand-typed quarterly snapshots rather than parsed — those three export
+formats are the most expensive to support and the balances move slowly enough
+that automation doesn't pay for itself. Reasoning in
+[`docs/HOW-IT-WORKS.md`](docs/HOW-IT-WORKS.md) §1.1.
 
 Design plan: `FinSight-Design-Plan.md`.
 How it all works, from scratch (start here): [`docs/HOW-IT-WORKS.md`](docs/HOW-IT-WORKS.md).
@@ -12,18 +19,22 @@ Data source validation (read this before writing a parser): [`docs/DATA-SOURCES.
 
 ## Status
 
-Scaffold. What works end to end today:
+Running on real data — three months of credit card transactions ingested and
+categorized end to end.
 
 | Piece | State |
 |---|---|
 | Postgres + pgvector via Docker Compose | ✅ |
 | Schema (`institutions`, `transactions`, `holdings`, `ingestion_log`) | ✅ |
-| Ingestion pipeline: scan → parse → dedup → classify → embed → insert | ✅ |
+| Ingestion pipeline: scan → parse → dedup → classify → embed → insert | ✅ on real data |
 | Capital One CSV parser | ✅ with tests |
-| DCU / Vanguard / Fidelity / Morgan Stanley parsers | 🚧 stubs with format notes |
+| Dedup — content-hash file skip, plus within-file identical charges | ✅ with tests |
+| Rule-based categorizer, 18-bucket taxonomy | ✅ with tests |
 | REST endpoints (`/transactions`, `/holdings`, `/net-worth`, `/allocation`, `/ingestion-log`) | ✅ |
-| RAG chat (`/chat`) with aggregate-vs-semantic routing | ✅ untested against real data |
-| Rule-based categorizer | ✅ (scikit-learn model is Phase 2) |
+| RAG chat (`/chat`) with aggregate-vs-semantic routing | ⚠️ both routes exercised on synthetic fixtures only — **not yet asked a real question** |
+| DCU parser | 🚧 stub — the next thing to build |
+| Manual holdings entry (the other half of net worth) | ⬜ not started |
+| Vanguard / Fidelity / Morgan Stanley parsers, all PDF parsers | ⬜ descoped, see §1.1 |
 | Scheduled jobs, React frontend | ⬜ not started |
 
 ## Quick start
@@ -51,12 +62,16 @@ curl -X POST localhost:8000/chat -H 'content-type: application/json' \
 
 ## Tests
 
+Run them in the container — the host Python is not guaranteed to match:
+
 ```bash
-cd backend && pip install -e '.[dev]' && pytest
+docker compose exec api pip install pytest && docker compose exec api pytest -q
 ```
 
-The parser tests run on synthetic fixtures in `backend/tests/fixtures/` — no real
-financial data is needed, or committed.
+Tests run on synthetic fixtures in `backend/tests/fixtures/` — no real financial
+data is needed, or committed. Where a test names a real merchant brand (because
+that is what the pattern has to match), store numbers, cities, and reference
+codes are genericized.
 
 ## Layout
 
@@ -78,11 +93,15 @@ Ingestion is **folder-driven**: dropping a file into `inbox/vanguard/` is what
 declares its institution, so parser dispatch only has to detect the *format*.
 `app/ingestion/registry.py` maps folder + extension to a parser class.
 
-Dedup is what makes the CSV-recent / PDF-backfill strategy safe. The same
-transaction arrives twice in two renderings, so `dedup.py` normalizes case,
-whitespace, and trailing reference numbers before hashing
-`(institution, date, amount, description)`. The hash has a unique constraint, so
-re-dropping a statement is a no-op. `tests/test_dedup_and_routing.py` pins this.
+Dedup works at two levels, because both failures are real. **Files** are skipped
+by a hash of their *contents*, not their name — Capital One names every export
+`transactions.csv`, so a name-based check silently swallows every month after the
+first. **Rows** are fingerprinted on normalized `(institution, date, amount,
+description)`, with case, whitespace, and trailing reference numbers stripped, so
+the overlapping windows of successive 90-day exports don't double-count. Two
+genuinely identical charges on one day are kept distinct by an occurrence index
+computed per file, which is what keeps re-ingestion idempotent.
+`tests/test_dedup_and_routing.py` pins all of it.
 
 Chat routes before it retrieves. "What's my net worth" needs *every* holding row,
 and top-k vector search will answer it confidently and wrongly — so
@@ -90,19 +109,16 @@ and top-k vector search will answer it confidently and wrongly — so
 lookup-shaped questions to pgvector. The LLM never does arithmetic; on the
 aggregate path it only phrases numbers Postgres already computed.
 
-## Environment notes
+## Requirements
 
-Checked on this machine, 2026-08-06 — three things need attention before the
-corresponding phase:
+Docker is the only hard requirement — the API image pins its own Python 3.12, so
+whatever is on your host is irrelevant. `docker-compose.yml` deliberately sticks
+to `version: "3.8"` syntax so it runs on Compose v2.2 and later.
 
-- **Python is 3.10.9; the project targets 3.12.** The Docker image pins 3.12, so
-  containers are fine. For local `pytest` and editor tooling, install 3.12
-  (`brew install python@3.12`, or pyenv).
-- **Node is v16.15.0.** Vite 5+ requires Node 18+, so the Phase 3 React frontend
-  will not scaffold until Node is upgraded. Not blocking Phases 1–2.
-- **Docker is 20.10.12 / Compose v2.2.3** (2021 vintage). `docker-compose.yml`
-  sticks to `version: "3.8"` syntax for that reason. Upgrading Docker Desktop is
-  worth doing but not required.
+The Phase 3 React frontend will need Node 18+ when it exists. Nothing else does.
+
+Machine-specific gotchas for the current environment live in
+[`docs/PROJECT-STATE.md`](docs/PROJECT-STATE.md) §7, not here.
 
 ## Security
 
@@ -119,8 +135,13 @@ corresponding phase:
 
 ## Next steps
 
-1. Export one month from DCU and Capital One; confirm the real CSV headers.
-2. Implement `DCUCSVParser` against that export; `CapitalOneCSVParser` should
-   already work — verify with `POST /ingest`.
-3. Ask `/chat` a few real questions; tune `rag/router.py` where it misroutes.
-4. Phase 2: Vanguard multi-section CSV, then the rest of the investment parsers.
+1. Export one month from DCU and implement `DCUCSVParser` against the real
+   header — it is currently a stub written against a guess, and it is now half
+   the ingestion pipeline.
+2. Manual holdings entry, so net worth becomes a complete number.
+3. Signal truncation on the semantic retrieval path, so the LLM can't sum 20 of
+   30 relevant rows and sound certain about it.
+4. Alembic. `create_all()` cannot alter existing tables, and there is real data
+   now.
+
+See [`docs/PROJECT-STATE.md`](docs/PROJECT-STATE.md) for the full open-issue list.
