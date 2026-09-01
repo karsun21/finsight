@@ -75,22 +75,3 @@ class CapitalOneCSVParser(BaseParser):
             )
 
         return result
-
-
-class CapitalOnePDFParser(BaseParser):
-    """PDF statement backfill for anything older than the 90-day CSV window.
-
-    Statements & Documents holds ~7 years. Extract the transaction table with
-    pdfplumber first; fall back to camelot only if the ruling lines confuse it.
-    """
-
-    institution = "Capital One"
-    account_type = "credit"
-    extensions = (".pdf",)
-
-    def parse(self, path: Path) -> ParseResult:
-        raise NotImplementedError(
-            "Capital One PDF parser not implemented yet — start by running "
-            "`pdfplumber.open(path).pages[1].extract_table()` on a real statement "
-            "and building the column map from what comes back."
-        )

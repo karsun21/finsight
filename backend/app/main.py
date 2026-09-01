@@ -14,8 +14,10 @@ logging.basicConfig(level=logging.INFO)
 
 app = FastAPI(
     title="FinSight",
-    description="Personal finance RAG assistant across DCU, Capital One, Vanguard, "
-    "Fidelity, and Morgan Stanley.",
+    description="Personal finance assistant over your own statement exports. Ask a "
+    "question in plain English; aggregate questions are answered from SQL rollups "
+    "and specific lookups from vector search over transaction descriptions. "
+    "Automated ingestion currently covers Capital One credit statements.",
     version="0.1.0",
 )
 

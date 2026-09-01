@@ -8,22 +8,23 @@ has to be detected, and the extension is enough for that.
 from pathlib import Path
 
 from app.ingestion.base import BaseParser
-from app.ingestion.parsers.capital_one import CapitalOneCSVParser, CapitalOnePDFParser
-from app.ingestion.parsers.dcu import DCUCSVParser, DCUPDFParser
-from app.ingestion.parsers.fidelity import FidelityCSVParser, FidelityPDFParser
-from app.ingestion.parsers.morgan_stanley import MorganStanleyReleasesParser
-from app.ingestion.parsers.vanguard import VanguardCSVParser, VanguardPDFParser
+from app.ingestion.parsers.capital_one import CapitalOneCSVParser
 
 # Folder name under inbox/ -> parsers to try, in order.
+#
+# Only Capital One is automated. Vanguard, Fidelity, and Morgan Stanley are
+# hand-entered quarterly holdings snapshots by design, not a backlog: their
+# parsers are the most expensive to write and add no architecture the Capital
+# One path does not already demonstrate. Their export formats — Vanguard's
+# multi-section CSV, Fidelity's PDF-only balances, Morgan Stanley's two .xlsx
+# reports — are documented in docs/DATA-SOURCES.md if that ever changes.
 PARSERS: dict[str, list[type[BaseParser]]] = {
-    "dcu": [DCUCSVParser, DCUPDFParser],
-    "capital_one": [CapitalOneCSVParser, CapitalOnePDFParser],
-    "vanguard": [VanguardCSVParser, VanguardPDFParser],
-    "fidelity": [FidelityCSVParser, FidelityPDFParser],
-    "morgan_stanley": [MorganStanleyReleasesParser],
+    "capital_one": [CapitalOneCSVParser],
 }
 
-# Seed rows for the `institutions` table.
+# Seed rows for the `institutions` table. Deliberately longer than PARSERS:
+# an institution needs a row here to own hand-entered holdings, whether or not
+# anything parses its statements.
 INSTITUTIONS: list[tuple[str, str]] = [
     ("DCU", "checking"),
     ("Capital One", "credit"),

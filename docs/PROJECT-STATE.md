@@ -21,13 +21,20 @@ granularity — "dining", "travel" — never "coffee specifically". This dropped
 scikit-learn categorizer and the two-stage "semantic filter → SQL aggregate"
 retrieval design.
 
-**B. Two institutions automated, three by hand** (2026-08-12). Capital One
-(credit) and DCU (cash) get parsers. Vanguard, Fidelity, and Morgan Stanley get
-**hand-entered quarterly holdings snapshots** instead. Those three parsers add no
-new architecture while being the most expensive to write — Vanguard's
-multi-section CSV, Morgan Stanley's two `.xlsx` reports, and Fidelity's
-balances existing only in a quarterly PDF. Balances move slowly enough that
+**B. One institution automated, the rest by hand** (2026-08-12, tightened
+2026-09-01). Capital One (credit) has the only parser. Vanguard, Fidelity, and
+Morgan Stanley get **hand-entered quarterly holdings snapshots** instead — those
+parsers add no new architecture while being the most expensive to write
+(Vanguard's multi-section CSV, Morgan Stanley's two `.xlsx` reports, Fidelity's
+balances existing only in a quarterly PDF), and balances move slowly enough that
 typing a few rows a quarter wins.
+
+**Their stub parsers have been deleted**, along with DCU's and the Capital One
+PDF stub — 165 lines of `NotImplementedError` that had never executed, against 96
+lines of working code. Every export format they documented is preserved in
+`docs/DATA-SOURCES.md`, which is where that research belongs. Re-adding a parser
+is a new file plus one line in `registry.py`; `BaseParser` and the working Capital
+One parser already show the pattern.
 
 **Net worth is not dropped.** `holdings` is already keyed on `(institution,
 as_of_date, ticker)` and does not care whether a row came from a parser or from
@@ -53,6 +60,10 @@ not fixtures.
   the cent (§4)
 - Local embeddings — 384-dim vectors, batched per file, no API cost
 - **`/chat` answered correctly on all three question shapes** (§2a)
+- **Chat UI at `GET /`** — a single self-contained HTML file in
+  `backend/app/static/`, served by the API. Each answer carries a badge naming
+  the route that served it and how much it was given, which makes the
+  aggregate-vs-semantic split visible rather than merely claimed.
 - **`_coverage_facts()` executes and its partial-month clause does its job** —
   April and July are correctly excluded from trend comparisons
 - Test suite green in the container: **77 passing**
@@ -193,26 +204,35 @@ the host, which has neither pytest nor a new enough Python. Should be
 
 ## 6. Next steps
 
-**Blocked on the owner:**
+The goal shaping this order (set 2026-09-01): the owner is putting this on a
+résumé for **mid-level backend roles**. That ranks demonstrated engineering rigour
+above breadth of integrations, and it is why the DCU parser is *not* on this list.
+A second CSV parser shows nothing the first one does not.
 
-1. **Export one month from DCU Digital Banking.** `parsers/dcu.py` is 43 lines of
-   `NotImplementedError` written against a *guessed* format, and under decision B
-   it is now half the pipeline — the single blocking item. Needed: the header row
-   plus a few amount-scrubbed sample rows. ⚠️ Also confirm the export UI still
-   works post-merger — DCU merged with First Tech on 2026-01-01, and
-   `docs/DATA-SOURCES.md:46` flags this as the finding most likely to be stale.
+1. **Alembic migrations** (§5.6). The most visible toy pattern in the repo —
+   `create_all()` cannot alter existing tables, and it already bit once when
+   `file_hash` was added. Schema evolution is a daily backend concern and its
+   absence is conspicuous. Do it before any schema change.
+2. **CI: GitHub Actions running `pytest`.** ~20 lines. 77 passing tests that
+   nothing runs automatically is a wasted signal.
+3. **A DB session fixture + tests for `aggregate_facts()`** (§5.1). Every test in
+   the suite is currently pure-unit; there is no `conftest.py`. This is the gap
+   that hid the sign inversion.
+4. **README with an architecture summary, a real `/chat` transcript, and a
+   `/docs` screenshot**, plus a synthetic demo dataset grown from
+   `capital_one_sample.csv`. The repo is private and full of real data, so this is
+   how anyone else ever sees it work.
+5. Category×month cross-tab (§5.2) — closes the gap the model keeps flagging.
+6. Truncation signal on the semantic path (§5.3).
+7. Manual holdings entry — probably a generic `inbox/holdings/*.csv` parser so a
+   few hand-typed rows a quarter flow through the same pipeline. This, not DCU,
+   is what unlocks net worth: DCU is cash, holdings are the investments.
+8. The `issuer_category` column (§5.4).
 
-**Unblocked code work, in the order I'd do it:**
-
-2. A DB session fixture + tests for `aggregate_facts()` (§5.1). Do this before
-   adding more facts, so the next one is born tested.
-3. Category×month cross-tab (§5.2) — small, and it closes the gap the model keeps
-   flagging.
-4. Truncation signal on the semantic path (§5.3).
-5. Manual holdings entry — probably a generic `inbox/holdings/*.csv` parser so a
-   few hand-typed rows a quarter flow through the same pipeline. The other half
-   of net worth.
-6. The `issuer_category` column (§5.4).
+**Explicitly not doing:** the DCU parser, and the Phase 3 React dashboard. If DCU
+is ever revived it needs a real export header from the owner first, and
+`docs/DATA-SOURCES.md:46` flags the post-merger export UI (DCU merged with First
+Tech on 2026-01-01) as the finding most likely to be stale.
 
 ---
 
