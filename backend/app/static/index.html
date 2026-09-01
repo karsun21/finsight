@@ -1,0 +1,287 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>FinSight</title>
+<style>
+  /* Palette is defined once here and swapped wholesale for dark mode, so every
+     colour has a light and a dark value and none are hardcoded further down. */
+  :root {
+    --bg: #fbfbfa;
+    --surface: #ffffff;
+    --border: #e4e4e1;
+    --text: #1a1a19;
+    --muted: #6b6b66;
+    --accent: #2f6f4e;
+    --accent-soft: #eef4f0;
+    --user-bg: #2f6f4e;
+    --user-text: #ffffff;
+    --error: #a33;
+    --error-bg: #fdf2f2;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #16171a;
+      --surface: #1d1f23;
+      --border: #2e3138;
+      --text: #e8e8e6;
+      --muted: #9a9a94;
+      --accent: #7fbf9a;
+      --accent-soft: #1f2a24;
+      --user-bg: #2f6f4e;
+      --user-text: #ffffff;
+      --error: #e88;
+      --error-bg: #2a1e1e;
+    }
+  }
+
+  * { box-sizing: border-box; }
+
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font: 15px/1.6 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    display: flex;
+    flex-direction: column;
+    height: 100vh;
+  }
+
+  header {
+    padding: 22px 24px 6px;
+    flex-shrink: 0;
+  }
+  header h1 {
+    margin: 0;
+    font-size: 14px;
+    font-weight: 600;
+    letter-spacing: 0.02em;
+    color: var(--muted);
+  }
+
+  #log {
+    flex: 1;
+    overflow-y: auto;
+    padding: 20px 24px 8px;
+    display: flex;
+    flex-direction: column;
+    gap: 26px;
+  }
+
+  .wrap { max-width: 680px; width: 100%; margin: 0 auto; }
+
+  .msg { display: flex; flex-direction: column; gap: 7px; }
+  .msg.user { align-items: flex-end; }
+
+  .bubble { max-width: 90%; overflow-wrap: anywhere; }
+
+  /* Only the person's own messages are boxed. Replies sit directly on the page
+     as prose — a bordered card around every answer reads like an output panel
+     rather than a conversation. */
+  .user .bubble {
+    padding: 10px 16px;
+    border-radius: 18px;
+    background: var(--user-bg);
+    color: var(--user-text);
+  }
+  .bot .bubble { max-width: 100%; }
+  .bubble p:first-child { margin-top: 0; }
+  .bubble p:last-child { margin-bottom: 0; }
+  .bubble ul { margin: 8px 0; padding-left: 20px; }
+  .bubble li { margin: 3px 0; }
+
+  /* The badge is the point of this UI: it shows which retrieval path answered
+     and how many facts it was given, so the router is visible rather than
+     merely claimed. */
+  .badge {
+    font-size: 11px;
+    color: var(--muted);
+    font-variant-numeric: tabular-nums;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+  .badge .route {
+    font-weight: 600;
+    color: var(--accent);
+    background: var(--accent-soft);
+    padding: 2px 7px;
+    border-radius: 4px;
+    letter-spacing: 0.02em;
+  }
+
+  .error .bubble { border-color: var(--error); background: var(--error-bg); color: var(--error); }
+
+  .thinking { display: flex; gap: 4px; align-items: center; padding: 4px 0; }
+  .thinking span {
+    width: 6px; height: 6px; border-radius: 50%;
+    background: var(--muted); opacity: 0.4;
+    animation: pulse 1.3s ease-in-out infinite;
+  }
+  .thinking span:nth-child(2) { animation-delay: 0.18s; }
+  .thinking span:nth-child(3) { animation-delay: 0.36s; }
+  @keyframes pulse { 0%, 60%, 100% { opacity: 0.25; } 30% { opacity: 0.9; } }
+
+  .empty { color: var(--muted); font-size: 14px; }
+  .empty p { margin: 0 0 12px; }
+  .examples { display: flex; flex-direction: column; gap: 8px; align-items: flex-start; }
+  .examples button {
+    font: inherit;
+    font-size: 13px;
+    color: var(--text);
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 16px;
+    padding: 9px 15px;
+    cursor: pointer;
+    text-align: left;
+  }
+  .examples button:hover { border-color: var(--accent); color: var(--accent); }
+
+  footer {
+    padding: 10px 24px 24px;
+    flex-shrink: 0;
+  }
+  form { display: flex; gap: 10px; }
+  input[type=text] {
+    flex: 1;
+    font: inherit;
+    padding: 12px 16px;
+    border: 1px solid var(--border);
+    border-radius: 20px;
+    background: var(--surface);
+    color: var(--text);
+  }
+  input[type=text]:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
+  button[type=submit] {
+    font: inherit;
+    font-weight: 500;
+    padding: 12px 22px;
+    border: none;
+    border-radius: 20px;
+    background: var(--accent);
+    color: #fff;
+    cursor: pointer;
+  }
+  button[type=submit]:disabled { opacity: 0.45; cursor: default; }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>FinSight</h1>
+</header>
+
+<div id="log">
+  <div class="wrap empty" id="empty">
+    <p>Ask anything about your spending, or start here:</p>
+    <div class="examples">
+      <button data-q="How much did I spend on dining?">How much did I spend on dining?</button>
+      <button data-q="How has my spending changed month to month?">How has my spending changed month to month?</button>
+      <button data-q="What was that charge from the storage place?">What was that charge from the storage place?</button>
+    </div>
+  </div>
+</div>
+
+<footer>
+  <form id="composer" class="wrap" autocomplete="off">
+    <input type="text" id="q" placeholder="Ask a question…" required>
+    <button type="submit" id="send">Send</button>
+  </form>
+</footer>
+
+<script>
+const log = document.getElementById("log");
+const form = document.getElementById("composer");
+const input = document.getElementById("q");
+const send = document.getElementById("send");
+
+// The answer text comes back from an LLM. Escape it before it touches innerHTML,
+// then apply a deliberately tiny subset of markdown — bold, paragraphs, bullets —
+// which is all the /chat responses actually use.
+function escapeHtml(s) {
+  return s.replace(/[&<>"']/g, c =>
+    ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+}
+
+function render(text) {
+  const bolded = escapeHtml(text).replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");
+  return bolded.split(/\n\s*\n/).map(block => {
+    const lines = block.split("\n").filter(l => l.trim());
+    if (lines.length && lines.every(l => /^\s*[-*]\s+/.test(l))) {
+      return "<ul>" + lines.map(l => "<li>" + l.replace(/^\s*[-*]\s+/, "") + "</li>").join("") + "</ul>";
+    }
+    return "<p>" + lines.join("<br>") + "</p>";
+  }).join("");
+}
+
+function addMessage(cls, htmlBody, badge) {
+  document.getElementById("empty")?.remove();
+  const el = document.createElement("div");
+  el.className = "wrap msg " + cls;
+  const bubble = document.createElement("div");
+  bubble.className = "bubble";
+  bubble.innerHTML = htmlBody;
+  el.appendChild(bubble);
+  if (badge) {
+    const b = document.createElement("div");
+    b.className = "badge";
+    b.innerHTML = badge;
+    el.appendChild(b);
+  }
+  log.appendChild(el);
+  log.scrollTop = log.scrollHeight;
+  return el;
+}
+
+async function ask(question) {
+  addMessage("user", render(question));
+  input.value = "";
+  send.disabled = true;
+
+  const pending = addMessage("bot",
+    '<div class="thinking"><span></span><span></span><span></span></div>');
+
+  try {
+    const res = await fetch("/chat", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ question }),
+    });
+    if (!res.ok) throw new Error("The server returned " + res.status + " " + res.statusText + ".");
+    const data = await res.json();
+    pending.remove();
+    // rows_used means different things per route, so the label has to differ
+    // too. Aggregate returns SQL-computed fact lines the model phrases; semantic
+    // returns the top-k candidate transactions, most of which go unused.
+    const detail = data.route === "aggregate"
+      ? data.rows_used + " fact" + (data.rows_used === 1 ? "" : "s") + " from SQL"
+      : "top " + data.rows_used + " rows by similarity";
+    addMessage("bot", render(data.answer),
+      '<span class="route">' + escapeHtml(data.route) + "</span> · " + detail);
+  } catch (err) {
+    pending.remove();
+    addMessage("bot error", render(err.message || "Could not reach the API."));
+  } finally {
+    send.disabled = false;
+    input.focus();
+  }
+}
+
+form.addEventListener("submit", e => {
+  e.preventDefault();
+  const q = input.value.trim();
+  if (q) ask(q);
+});
+
+document.addEventListener("click", e => {
+  const btn = e.target.closest(".examples button");
+  if (btn && !send.disabled) ask(btn.dataset.q);
+});
+
+input.focus();
+</script>
+
+</body>
+</html>
