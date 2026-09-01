@@ -1,13 +1,13 @@
-# Project State — 2026-08-12
+# Project State — 2026-09-01
 
-Handoff notes, rewritten at the end of the second working session. Companion to
+Handoff notes, rewritten at the end of the third working session. Companion to
 `docs/HOW-IT-WORKS.md`, which explains the architecture and the RAG concepts from
 scratch and holds the authoritative scope statement in §1.1.
 
 **Owner:** Karthik Sundar
-**Repo:** `~/projects/finsight`, branch `master`
-**Phase:** 1 (banking + credit). **Real Capital One data is ingested.** The
-pipeline has run end to end on it.
+**Repo:** `~/projects/finsight`, branch `main` (private GitHub remote `karsun21/finsight`)
+**Phase:** 1 (banking + credit). **Real Capital One data is ingested, and `/chat`
+has now been exercised against it on all three routes.**
 
 ---
 
@@ -39,63 +39,45 @@ Full reasoning: `docs/HOW-IT-WORKS.md` §1.1.
 
 ## 2. What is verified working
 
-Everything below has actually run on this machine, and everything from "real
-Capital One CSV" down ran against **real financial data**, not fixtures.
+Everything below has actually run on this machine against **real financial data**,
+not fixtures.
 
 - `docker compose up` — Postgres 16 + pgvector, schema auto-created, institutions seeded
 - **196 real transactions ingested** from three Capital One statement exports
   covering 2026-04-11 to 2026-07-11
 - Parser matched the real export layout with zero warnings and zero failures
 - **Content-hash file skip** — re-running `/ingest` with an already-processed file
-  present correctly skipped it (`files_seen: 3, files_ingested: 2`)
-- **Categorization** — observed on real data down to **4 uncategorized rows out of
-  196**, at which point rules were added for the last four merchants
+  present correctly skipped it
+- **Categorization: 0 uncategorized out of 196**, confirmed by query, with every
+  bucket matching the predicted breakdown and every amount delta reconciled to
+  the cent (§4)
 - Local embeddings — 384-dim vectors, batched per file, no API cost
-- Test suite green in the container (49 passing at last container run)
+- **`/chat` answered correctly on all three question shapes** (§2a)
+- **`_coverage_facts()` executes and its partial-month clause does its job** —
+  April and July are correctly excluded from trend comparisons
+- Test suite green in the container: **77 passing**
 
-## 2a. What is NOT verified — start here next session
+> The previous version of this file said "49 passing" — it was stale by 23 tests.
+> Treat counts in handoff notes as decaying; re-run rather than quote.
 
-Three things were written and reasoned about but **never actually run**. Do not
-report them as working without checking.
+## 2a. §2a is empty — all three items closed 2026-09-01
 
-1. **The final re-ingest output was never seen.** After the last taxonomy changes
-   (Fabletics → shopping, PerksAtWork → entertainment, Ventra → transport, Google
-   One → subscriptions, fitness → health) the predicted breakdown was: dining 83,
-   shopping 47, transport 39, health 7, groceries 6, travel 5, entertainment 3,
-   card_payment 3, subscriptions 1, donations 1, housing 1, **uncategorized 0** —
-   196 rows, spending summing to −3653.51. **Confirm against reality**:
+The three things the last session flagged as written-but-never-run have now all
+been run. Recorded here because *how* they failed is the useful part.
 
-   ```bash
-   docker compose exec db psql -U finsight -d finsight -c \
-     "SELECT category, count(*), round(sum(amount),2) AS total
-      FROM transactions GROUP BY category ORDER BY count DESC;"
-   ```
-
-2. **`_coverage_facts()` has never executed.** It compiles and its partial-month
-   logic was unit-checked in isolation, but no `/chat` call has run since it was
-   added, so its output has never been seen in a real prompt.
-
-3. **`/chat` has never been asked a question against real data.** Both routes were
-   exercised in the first session on a 4-row synthetic fixture only. This is the
-   headline feature and it is the least-tested thing in the project.
-
-   ```bash
-   curl -sS -X POST localhost:8000/chat -H 'content-type: application/json' \
-     -d '{"question": "How much did I spend on dining?"}' | python3 -m json.tool
-
-   # the one that exercises the coverage fix — a naive answer here claims
-   # spending collapsed in July, when July is simply 11 days long
-   curl -sS -X POST localhost:8000/chat -H 'content-type: application/json' \
-     -d '{"question": "How has my spending changed month to month?"}' | python3 -m json.tool
-
-   # semantic route: should say "semantic" in the response, not "aggregate"
-   curl -sS -X POST localhost:8000/chat -H 'content-type: application/json' \
-     -d '{"question": "What was that charge from the storage place?"}' | python3 -m json.tool
-   ```
-
-   Check `route` and `rows_used` in each response, not just the prose. An answer
-   that looks right via the wrong route is a misrouting bug waiting to surface on
-   a question where it matters.
+1. **Final category breakdown — confirmed, after a re-ingest.** The first query
+   did not match the prediction: 4 uncategorized rows, health 3 not 7,
+   entertainment 6 not 3, a `utilities` bucket that shouldn't exist. The rules
+   were all present and correct in `rules.py`; **the database was three weeks
+   stale.** A rule edit is invisible until a re-ingest, because the category is
+   baked into the embedded text. After re-ingesting, every bucket matched.
+2. **`_coverage_facts()` executed** — proven by `rows_used` arithmetic and by the
+   coverage window appearing in the answer text. Its partial-month clause was
+   then genuinely exercised by the month-over-month question and worked.
+3. **`/chat` answered all three questions against real data.** Dining routed to
+   `aggregate` and returned the correct $1,476.73 / 83 txns. The storage lookup
+   routed to `semantic` and found the right row. The month-over-month question
+   **failed on first run** and exposed two real bugs — both since fixed (§4).
 
 ---
 
@@ -108,95 +90,108 @@ report them as working without checking.
 | Coverage | 2026-04-11 → 2026-07-11, contiguous, no gaps |
 | Complete calendar months | May and June only — **April and July are partial** |
 | Holdings | 0 — none entered yet |
-| Categories | 11 in use; uncategorized count **unconfirmed since the last rule change**, see §2a |
+| Categories | 11 in use, **uncategorized 0**, confirmed 2026-09-01 |
+| Spending total | **−3653.51** (excludes `card_payment`) — the invariant to check after any re-ingest |
+
+Monthly spending, now that payments are excluded from the rollup:
+
+| month | spending | payments |
+|---|---|---|
+| 2026-04 | −839.80 | — |
+| 2026-05 | −1424.25 | 1 |
+| 2026-06 | −1024.88 | 1 |
+| 2026-07 | −364.58 | 1 |
 
 The three source CSVs live in `inbox/capital_one/` and are **gitignored**. The
 database lives in the `pgdata` Docker volume, not in the repo.
 
 **Statement periods run mid-month to mid-month** (~11th to ~12th), so calendar
-month rollups split each statement across two buckets. `_coverage_facts()` in
-`rag/retrieval.py` now tells the LLM which months are partial, because the
-rollups are correct while the conclusion drawn from them ("spending collapsed in
-July") is not.
+month rollups split each statement across two buckets, and April and July are
+partial. `_coverage_facts()` tells the LLM which months are partial — verified
+working.
 
 ---
 
 ## 4. Work completed this session
 
-**Categorizer rewritten.** `pipeline.py` used to do `txn.category or
-categorize(...)`, which short-circuited on Capital One's own label and meant the
-rules never ran for card transactions at all. Now `resolve_category()` runs
-description rules **first**, falls back to a mapped issuer label, then `None`.
-Taxonomy is `CATEGORIES` in `classification/rules.py`, validated at import.
+**Re-ingest closed a stale database.** See §2a.1. Every delta reconciled exactly:
+shopping −29.99 (two Fabletics rows, 27.15 + 2.84), transport −5.00 (Ventra),
+health/entertainment ±240.97 (four fitness rows, derived independently from both
+buckets and agreeing), and the Google One row moving from `utilities` to
+`subscriptions`. Spending total unchanged at −3653.51 throughout, which is what
+proves rows moved buckets without amounts changing.
 
-**Five short-token substring bugs found and fixed.** `MTA` matched inside
-`PYMTAUTHDATE` (a card payment counted as transport), `ATM` inside `TREATMENT`,
-`ACH` inside `COACH`, `FEE` inside `COFFEE`, `RENT` inside `AVIS RENT A CAR`. All
-`\b`-anchored now with named regression tests. **This is the failure mode to
-watch for whenever a short pattern is added** — nothing errors, the row just
-lands in the wrong bucket.
+**Router bug: periodicity questions fell through to vector search.**
+"How has my spending changed month to month?" matched none of the eleven
+`AGGREGATE_PATTERNS` — the closest, `\bper month\b|\bmonthly\b`, does not cover
+"month to month" — so it routed `semantic`, got 20 raw transactions, and the
+model correctly refused to sum them. Fixed by adding three patterns covering the
+*family* (month-to-month/over-month, each|every|by|per month|week|year, trend),
+one of which replaces the narrower `per month`. Five test cases added.
 
-**File dedup by content hash.** `ingestion_log.file_hash` replaced the
-filename-only check. Capital One names every export identically.
+⚠️ **The router is an allowlist that defaults to the route that cannot do
+arithmetic.** Any rollup phrasing nobody enumerated degrades silently to vector
+search. The docstring's escalation plan stands: **if a third distinct phrasing
+misroutes, stop adding patterns and add the Haiku classifier.** One has misrouted
+so far.
 
-**Within-file duplicate handling.** Two genuinely identical same-day charges used
-to collide on `dedup_hash` and 500 the whole ingest. Now the occurrence index
-*within the file* joins the key — occurrence 0 hashes unchanged, the second
-hashes `base#1`. Counting per file rather than per database is what keeps
-re-ingestion idempotent; see the docstring on `occurrence_hash()`.
+**Monthly rollup bug: card payments were netted into spending, inverting the
+answer.** `aggregate_facts()` built its monthly fact as a bare
+`sum(amount)` over all transactions and labelled it `Net cash flow`. With one
+card payment per statement cycle, the payment dominates and flips the sign — the
+model reported May→June as a **+$135.77 rise** when spending had in fact **fallen
+$399.37 (28%)**. Fixed by reporting spending and payments as separate facts,
+gated on a new `NON_SPEND_CATEGORIES` frozenset in `rules.py`
+(`card_payment`, `transfer`, `income`, `investment_income`; `cash` deliberately
+excluded — an ATM withdrawal is money going out), with a subset assert against
+`CATEGORIES`.
 
-**Persistence wrapped.** A constraint violation now logs one failed file instead
-of 500-ing `/ingest` and abandoning the rest of the inbox.
-
-**Taxonomy decisions made against real data** (all reversible, all one-line):
-
-| Decision | Rationale |
-|---|---|
-| Local transit → `transport`, not `travel` | Capital One files subway fares under a travel-ish label by MCC range. 18 of 19 "travel" rows were commuting. `travel` means trips; `transport` means getting around. |
-| `other travel` issuer label → `None` | Grab bag: carried transit *and* self-storage. Real travel arrives as `airfare`/`hotels`/`lodging`. |
-| Fitness → `health`, not `entertainment` | Issuer put gym memberships beside concert tickets. Owner chose folding into health over a separate `fitness` bucket, to keep the bucket count down. |
-| `utilities` above `transport` in rule order | So phone carriers win the word "METRO". |
-| `travel` and `donations` buckets added | Both named explicitly by the owner or found in real data. |
+This is the most instructive bug so far: well-formatted, confident, and
+**backwards**, in a function with no test coverage, sitting there since the
+aggregate path was written.
 
 ---
 
 ## 5. Open issues, in priority order
 
-**1. `rag/retrieval.py` semantic path truncates silently.** Returns exactly
+**1. `aggregate_facts()` has no test coverage at all.** This is why the sign
+inversion above survived from the day it was written. Every test in the suite is
+pure-unit; there is no DB session fixture and no `conftest.py`. Adding one is the
+prerequisite for testing the whole aggregate path. **Highest priority** — it is
+the gap that hides this entire class of bug.
+
+**2. No category×month cross-tab.** `aggregate_facts()` gives category totals for
+the whole period and month totals across all categories, but never the two
+crossed. "Which categories drove the May→June decline?" is unanswerable, and the
+model has now flagged this itself, unprompted, on two separate questions.
+
+**3. `rag/retrieval.py` semantic path truncates silently.** Returns exactly
 `retrieval_top_k` (20) rows with no signal that more matched, so Claude can sum 20
-of 30 relevant rows and state a confident wrong total. Mitigation: when the result
-count equals `k`, say so in the facts — the same technique `_coverage_facts()`
-now uses. Lower priority because coarse questions route to SQL.
+of 30 relevant rows and state a confident wrong total. Both semantic calls this
+session returned exactly 20. Mitigation: when the result count equals `k`, say so
+in the facts — the same technique `_coverage_facts()` uses.
 
-**2. No `issuer_category` column.** We store the *resolved* category and discard
+**4. No `issuer_category` column.** We store the *resolved* category and discard
 Capital One's original label, so "why is this row in this bucket?" is not
-answerable in SQL — diagnosing the travel problem required re-running the rules by
-hand. Adding it needs one `ALTER TABLE` (see §7). Recommended before more data
-lands.
+answerable in SQL. Adding it needs one `ALTER TABLE` (see §7).
 
-**3. `/net-worth` excludes cash and says so** (`includes_cash: false`). Correct,
+**5. `/net-worth` excludes cash and says so** (`includes_cash: false`). Correct,
 but net worth stays incomplete until the DCU parser and the manual holdings
 snapshots exist.
 
-**4. No migrations.** `main.py` uses `create_all()`, which creates missing tables
-but never alters existing ones. There is real data now and no backup. This already
-bit once, when `file_hash` was added. **Switch to Alembic before the next schema
-change.**
+**6. No migrations.** `main.py` uses `create_all()`, which creates missing tables
+but never alters existing ones. There is real data now and no backup. **Switch to
+Alembic before the next schema change.**
 
-**5. `scikit-learn` is still in `pyproject.toml`** and nothing imports it. Dropping
-it would meaningfully shrink the image.
+**7. `scikit-learn` is still in `pyproject.toml`** and nothing imports it.
 
-**6. `make test` in the Makefile is wrong** — it runs `cd backend && pytest -q` on
+**8. `make test` in the Makefile is wrong** — it runs `cd backend && pytest -q` on
 the host, which has neither pytest nor a new enough Python. Should be
-`docker compose exec api pytest -q`.
+`docker compose exec api pytest -q`. (Moot until `make` is installed; see §7.)
 
 ---
 
 ## 6. Next steps
-
-**Do this first — it takes five minutes and closes out §2a:** confirm the final
-category breakdown, then ask `/chat` the three questions in §2a and check the
-`route` field on each. Everything below assumes that came back clean.
 
 **Blocked on the owner:**
 
@@ -207,13 +202,17 @@ category breakdown, then ask `/chat` the three questions in §2a and check the
    works post-merger — DCU merged with First Tech on 2026-01-01, and
    `docs/DATA-SOURCES.md:46` flags this as the finding most likely to be stale.
 
-**Unblocked code work:**
+**Unblocked code work, in the order I'd do it:**
 
-2. Manual holdings entry — probably a generic `inbox/holdings/*.csv` parser so a
-   few hand-typed rows a quarter flow through the same pipeline. This is the other
-   half of net worth.
-3. The `issuer_category` column (§5.2).
-4. Truncation signal on the semantic path (§5.1).
+2. A DB session fixture + tests for `aggregate_facts()` (§5.1). Do this before
+   adding more facts, so the next one is born tested.
+3. Category×month cross-tab (§5.2) — small, and it closes the gap the model keeps
+   flagging.
+4. Truncation signal on the semantic path (§5.3).
+5. Manual holdings entry — probably a generic `inbox/holdings/*.csv` parser so a
+   few hand-typed rows a quarter flow through the same pipeline. The other half
+   of net worth.
+6. The `issuer_category` column (§5.4).
 
 ---
 
@@ -238,12 +237,17 @@ is a one-line wrapper. Use the commands directly:
 
 ```bash
 docker compose up -d
-docker compose logs --tail 50 api          # -f follows forever; Ctrl+C to exit
+docker compose logs --tail 50 api
 docker compose exec db psql -U finsight -d finsight
 docker compose exec api pytest -q
 curl -sS -X POST localhost:8000/ingest | python3 -m json.tool
 curl -sS localhost:8000/health | python3 -m json.tool
 ```
+
+⚠️ **Write shell commands on a single line.** Backslash line-continuations break
+when pasted here — the backslash escapes a *space* instead of a newline, and the
+command mis-parses silently rather than erroring. This cost two round trips this
+session (a `psql -c` that ran an empty query, and a `curl` that POSTed no body).
 
 **Port conflict:** another project's containers (`solovis-take-home-*`) occupy
 **8000** and **5433** — the exact ports FinSight needs. Stop them first. The API
@@ -267,20 +271,27 @@ cd ~/projects/finsight && docker compose up -d
 curl -s localhost:8000/health | python3 -m json.tool
 ```
 
-Healthy looks like `{"status":"ok","pgvector":true,"transactions":196,...}`.
+Healthy looks like `{"status":"ok","pgvector":true,"transactions":196,"holdings":0}`.
 
 Code edits apply live — `./backend` is bind-mounted and uvicorn runs `--reload`.
 Only dependency changes need `--build`.
 
-**Re-ingesting after a categorization change.** The category is baked into the
-embedded text, so changing rules requires a real re-ingest, not an `UPDATE`. The
-source CSVs stay in `inbox/`, so clearing both tables is enough — deleting the log
-row is what lets the file-hash check see the file as new again:
+**Re-ingesting after a categorization change.** ⚠️ **A rule edit does nothing
+until you re-ingest.** The category is baked into the embedded text, so changing
+rules requires a real re-ingest, not an `UPDATE` — and nothing warns you. This
+silently cost three weeks: the rules were correct in the file the whole time
+while every query reported the old buckets. Deleting the log row is what lets the
+file-hash check see the file as new again:
 
 ```bash
-docker compose exec db psql -U finsight -d finsight -c \
-  "DELETE FROM transactions; DELETE FROM ingestion_log;"
+docker compose exec db psql -U finsight -d finsight -c "DELETE FROM transactions; DELETE FROM ingestion_log;"
 curl -sS -X POST localhost:8000/ingest | python3 -m json.tool
+```
+
+Then confirm — spending must still total **−3653.51**:
+
+```bash
+docker compose exec db psql -U finsight -d finsight -c "SELECT category, count(*), round(sum(amount),2) AS total FROM transactions GROUP BY category ORDER BY count DESC;"
 ```
 
 **Data safety.** `docker compose down` preserves the database. `docker compose
@@ -291,8 +302,7 @@ embedding model. There is no backup and no migration history.
 existing table, so do it by hand and restart:
 
 ```bash
-docker compose exec db psql -U finsight -d finsight -c \
-  "ALTER TABLE transactions ADD COLUMN issuer_category VARCHAR(64);"
+docker compose exec db psql -U finsight -d finsight -c "ALTER TABLE transactions ADD COLUMN issuer_category VARCHAR(64);"
 docker compose restart api
 ```
 
@@ -325,6 +335,8 @@ Read in this order:
 4. `backend/app/ingestion/pipeline.py` — the orchestrator
 5. `backend/app/classification/rules.py` — the taxonomy, which *is* the product
 6. `backend/app/rag/router.py` — aggregate-vs-semantic, the central design idea
+7. `backend/app/rag/retrieval.py` — `aggregate_facts()` is where the LLM's
+   arithmetic comes from, and it is untested (§5.1)
 
 `FinSight-Design-Plan.md` is the original plan and is knowingly out of date;
 `docs/DATA-SOURCES.md` and `HOW-IT-WORKS.md` §1.1 supersede it.
@@ -332,5 +344,7 @@ Read in this order:
 **Working style.** The owner is learning this stack as it is built and prefers to
 run commands themselves. Explain what a command does and what its output means,
 and hand it over rather than executing it, unless asked. They respond well to
-being told when a number looks wrong and why — several real bugs this session were
-found by treating a plausible-looking result skeptically rather than accepting it.
+being told when a number looks wrong and why — **every real bug across three
+sessions has been found that way**, by treating a plausible-looking result
+sceptically rather than accepting it. The May→June "spending rose $135.77" answer
+was well-formatted, internally consistent, and exactly backwards.

@@ -42,6 +42,22 @@ CATEGORIES: frozenset[str] = frozenset(
     }
 )
 
+#: Categories that move money without being spending. Monthly rollups must
+#: exclude these: a credit card statement carries one payment per cycle, and
+#: netting it against the charges inverts the answer — May→June once read as
+#: cash flow *rising* $135.77 while spending actually *fell* $399.
+#: `cash` is deliberately absent — an ATM withdrawal is money going out.
+NON_SPEND_CATEGORIES: frozenset[str] = frozenset(
+    {
+        "card_payment",
+        "transfer",
+        "income",
+        "investment_income",
+    }
+)
+
+assert NON_SPEND_CATEGORIES <= CATEGORIES, "NON_SPEND_CATEGORIES must be a subset of CATEGORIES"
+
 # Ordered: first match wins, so put specific patterns above general ones.
 # Matched against the uppercased description.
 RULES: list[tuple[str, str]] = [

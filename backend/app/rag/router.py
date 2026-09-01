@@ -21,7 +21,15 @@ AGGREGATE_PATTERNS = [
     r"\bsum\b",
     r"\bbalance\b",
     r"\bconcentration\b",
-    r"\bper month\b|\bmonthly\b",
+    # Periodicity and trend phrasings all mean "roll this up over time". These
+    # cover the family, not just the one that failed: "month to month" matched
+    # none of the original patterns and fell through to vector search, which
+    # returns k rows and cannot sum. Add the Haiku classifier rather than more
+    # patterns if a third distinct phrasing misroutes.
+    r"\bmonth[-\s]?(to|over)[-\s]?month\b",
+    r"\b(each|every|by|per) (month|week|year)\b",
+    r"\bmonthly\b",
+    r"\btrend(s|ing|ed)?\b",
     r"\bcompared? to\b|\bvs\.?\b",
 ]
 

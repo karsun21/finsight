@@ -4,6 +4,7 @@ from decimal import Decimal
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
+from app.classification.rules import NON_SPEND_CATEGORIES
 from app.config import get_settings
 from app.models import Holding, Institution, Transaction
 from app.rag.embeddings import embed_query, holding_to_text, transaction_to_text
@@ -133,13 +134,28 @@ def aggregate_facts(db: Session) -> list[str]:
     # own bind parameter, and Postgres then rejects the query because the grouped
     # expression is not syntactically identical to the selected one.
     month = func.to_char(Transaction.txn_date, "YYYY-MM")
+    # Spending and payments are reported as separate facts, never netted. A card
+    # statement carries one payment per cycle, so a single sum(amount) per month
+    # is dominated by the payment and flips sign: asked how spending changed
+    # month to month, the model read May->June as a $135.77 *rise* when spending
+    # had in fact *fallen* $399. Handing it a netted figure guarantees that.
+    is_spend = func.coalesce(Transaction.category, "").notin_(NON_SPEND_CATEGORIES)
     monthly = db.execute(
-        select(month, func.sum(Transaction.amount))
+        select(
+            month,
+            func.sum(Transaction.amount).filter(is_spend),
+            func.sum(Transaction.amount).filter(~is_spend),
+        )
         .group_by(month)
         .order_by(month.desc())
         .limit(12)
     ).all()
-    for month, amount in monthly:
-        facts.append(f"Net cash flow {month}: ${amount:,.2f}")
+    for month_label, spend, other in monthly:
+        facts.append(
+            f"Spending {month_label}: ${spend or 0:,.2f} "
+            "(excludes card payments, transfers, and income)"
+        )
+        if other:
+            facts.append(f"Payments and transfers {month_label}: ${other:,.2f}")
 
     return facts

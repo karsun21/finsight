@@ -106,7 +106,21 @@ def test_same_name_different_contents_hashes_differently(tmp_path):
 
 @pytest.mark.parametrize(
     "question",
-    ["What's my net worth right now?", "Total dining spend", "Show my asset allocation"],
+    [
+        "What's my net worth right now?",
+        "Total dining spend",
+        "Show my asset allocation",
+        # Periodicity phrasings. "month to month" was a real misroute: it matched
+        # none of the original patterns, fell through to vector search, and the
+        # model was handed 20 raw transactions for a question that needs a sum.
+        # These four are the family, not the one string that failed — if a
+        # phrasing outside them misroutes, add the Haiku classifier instead of a
+        # fifth pattern.
+        "How has my spending changed month to month?",
+        "What do I spend each month?",
+        "Show me my spending by month",
+        "Is my dining spend trending up?",
+    ],
 )
 def test_aggregate_questions_route_to_sql(question):
     assert route(question) == "aggregate"
@@ -114,7 +128,13 @@ def test_aggregate_questions_route_to_sql(question):
 
 @pytest.mark.parametrize(
     "question",
-    ["Did I pay for parking at the airport?", "What was that charge from Chipotle?"],
+    [
+        "Did I pay for parking at the airport?",
+        "What was that charge from Chipotle?",
+        # Guards the periodicity patterns above against over-triggering: a date
+        # in the question is not a request to roll anything up.
+        "Where did I eat on June 3rd?",
+    ],
 )
 def test_lookup_questions_route_to_vector_search(question):
     assert route(question) == "semantic"
