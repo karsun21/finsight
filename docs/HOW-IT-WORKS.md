@@ -18,9 +18,10 @@ Read it top to bottom. Each part builds on the one before.
 5. [Following one transaction all the way through](#5-following-one-transaction-all-the-way-through)
 6. [What happens when you ask a question](#6-what-happens-when-you-ask-a-question)
 7. [Five design decisions worth understanding](#7-five-design-decisions-worth-understanding)
-8. [Every file in the repo](#8-every-file-in-the-repo)
-9. [What's built and what isn't](#9-whats-built-and-what-isnt)
-10. [Glossary](#10-glossary)
+8. [Keeping code, schema, and machines in sync](#8-keeping-code-schema-and-machines-in-sync)
+9. [Every file in the repo](#9-every-file-in-the-repo)
+10. [What's built and what isn't](#10-whats-built-and-what-isnt)
+11. [Glossary](#11-glossary)
 
 ---
 
@@ -42,14 +43,14 @@ FinSight is a program that:
 
 That last part is the interesting one, and it's where RAG comes in.
 
-### 1.1 Scope: two sources automated, three entered by hand
+### 1.1 Scope: one source automated, the rest entered by hand
 
 The five institutions are **not** treated equally, and that's a deliberate
 decision rather than unfinished work.
 
 | | Institutions | How data arrives | Why |
 |---|---|---|---|
-| **Automated** | DCU (cash), Capital One (credit) | CSV → `inbox/` → parser → `transactions` | This is where *spending* lives, it changes daily, and it's thousands of rows. Automation earns its keep. |
+| **Automated** | Capital One (credit) | CSV → `inbox/` → parser → `transactions` | This is where *spending* lives, it changes daily, and it's thousands of rows. Automation earns its keep. |
 | **Manual** | Vanguard, Fidelity, Morgan Stanley | A holdings snapshot entered by hand, quarterly | These are *balances*, not events. They move slowly, they're a handful of rows, and their export formats are the three worst in the set. |
 
 The reasoning: parsers three, four, and five would add no new architecture — each
@@ -214,7 +215,7 @@ four:
 | Table | What's in it |
 |---|---|
 | `institutions` | Five rows, one per bank. Seeded automatically at startup (`registry.py:28`). All five stay seeded even though only two are automated — the investment institutions still own their manually-entered holdings. |
-| `transactions` | One row per purchase, payment, deposit — money moving. Fed by DCU + Capital One. |
+| `transactions` | One row per purchase, payment, deposit — money moving. Fed by Capital One. |
 | `holdings` | One row per investment position at a point in time — money sitting. Fed by hand, quarterly. |
 | `ingestion_log` | One row per file processed, including its content hash. Audit trail *and* the "have I seen this file?" check. |
 
@@ -282,9 +283,9 @@ select(Transaction).where(Transaction.category == "dining").order_by(desc(Transa
 
 The second is checked by your editor, refactorable, and can't be broken by a
 malformed string. It also defines the tables themselves — `models.py` is both the
-Python classes *and* the schema definition. On startup, `main.py:33` calls
-`Base.metadata.create_all()`, which creates any table that doesn't exist yet.
-That's why there's no separate "set up the database" step.
+Python classes *and* the schema definition. The database's actual shape is applied
+from Alembic migrations, which run in the container command before the server
+starts; see §8 for why `create_all()` was not good enough.
 
 **Where to look:** `backend/app/models.py`, `backend/app/db.py`
 
@@ -943,7 +944,115 @@ why you can verify the Capital One parser without Postgres running at all.
 
 ---
 
-## 8. Every file in the repo
+## 8. Keeping code, schema, and machines in sync
+
+Two tools in this repo exist for the same underlying reason: **things that live
+outside your code can quietly drift away from it.** Alembic keeps the database's
+shape in step with `models.py`. GitHub Actions keeps your laptop in step with
+every other machine. Both were added after a real incident, and both catch a class
+of bug whose defining feature is that nothing errors when it happens.
+
+### Alembic — version control for the database schema
+
+Your code is in git. Your database is not. That gap is the whole problem.
+
+**What the project did before.** On startup it called
+`Base.metadata.create_all()`, which means: *look at `models.py`, and create any
+table that does not exist yet.* That works perfectly until you change a table that
+already exists — because `create_all` only ever **creates**. It never **alters**.
+
+Add a column to a table that is already there and `create_all` sees the table,
+decides there is nothing to do, and returns. No error. No warning. Your Python now
+believes in a column the database has never heard of, and you find out at the
+first query that touches it. This happened here once already, when `file_hash` was
+added to `ingestion_log`.
+
+**What Alembic does instead.** Every schema change becomes a numbered file in
+`backend/alembic/versions/` with an `upgrade()` that applies it and a
+`downgrade()` that undoes it. The database records which revision it is currently
+on, in a table called `alembic_version`. `alembic upgrade head` means "apply
+whatever revisions this database has not seen yet."
+
+Schema history now lives in the repo, in order, reviewable in a diff — like
+commits, but for table structure:
+
+```
+1a47c85fc709   baseline schema        the four tables as they already existed
+9aebc89a15f0   add issuer_category    keeps the issuer's own label per row
+```
+
+**Two steps that look strange the first time.** *Stamping* was needed because this
+database already had its tables, built by `create_all`. Running the baseline
+against it would have failed — you cannot create tables that exist. So the version
+row was written directly: "you are already at `1a47c85fc709`." That is a claim, and
+a claim can be wrong, which is what `alembic check` is for: it compares `models.py`
+against the live schema and reports `No new upgrade operations detected` only if
+they genuinely agree. Stamping without checking would have baked in any drift
+invisibly.
+
+**One gotcha specific to this project.** The `embedding` columns are pgvector's
+`Vector` type. Autogenerate renders them as
+`pgvector.sqlalchemy.vector.VECTOR(dim=384)` but does *not* add the import, so
+every migration touching one would fail with `NameError`. `alembic/script.py.mako`
+— the template new migrations are generated from — adds that import permanently.
+
+**Day to day:**
+
+```bash
+docker compose exec api alembic revision --autogenerate -m "what changed"
+docker compose exec api alembic upgrade head
+docker compose exec api alembic current   # which revision is this database on
+docker compose exec api alembic check     # do the models match the schema
+```
+
+Autogenerate *proposes*; it does not decide. Read the generated file before
+applying it.
+
+### GitHub Actions — running the checks on a machine that is not yours
+
+**Continuous integration** is simply the practice of checking every change
+automatically. GitHub Actions is GitHub's way of doing it: you write a config file
+(`.github/workflows/tests.yml`), and on every push GitHub boots a **brand-new
+Ubuntu machine**, follows your steps in order, reports pass or fail, and throws the
+machine away.
+
+**The freshness is the entire point**, and this project supplies the perfect
+illustration. The test suite passed for weeks. But pytest was never in the Docker
+image — `pip install -e .` installs the main dependencies and skips the `[dev]`
+extras. Some earlier session had installed pytest by hand inside a running
+container, where it sat invisibly until that container was recreated and the tests
+abruptly could not run at all.
+
+On the machine where it was written, everything looked fine. On a fresh clone, the
+command this project's own docs call *the* way to run tests would have failed
+immediately. A clean machine cannot accumulate that kind of hidden state.
+
+**What the workflow does**, in order: starts a Postgres with pgvector, installs the
+real dependency set exactly as the Dockerfile does, applies the migrations to an
+empty database, checks for drift, runs pytest. The whole run takes about two
+minutes.
+
+Two of those steps are worth more than they look:
+
+- **Migrations against an empty database** proves they can build the schema from
+  nothing, on hardware that has never seen this project. That is hard to prove on
+  your own machine, because your database already has the tables — it is why the
+  baseline had to be generated against a throwaway database in the first place.
+- **`alembic check`** fails the build if someone edits `models.py` without
+  generating a migration. Drift is caught in seconds instead of surfacing weeks
+  later — which is exactly how the stale-categories bug happened, where the rules
+  were correct in the file and the database was three weeks behind them.
+
+The badge at the top of `README.md` is an image GitHub serves reflecting the latest
+result.
+
+**The one-line version: Alembic stops your schema drifting from your code, and CI
+stops your machine drifting from everyone else's.** Both convert a failure that is
+late, silent, and confusing into one that is early, loud, and obvious.
+
+---
+
+## 9. Every file in the repo
 
 ```
 docker-compose.yml          Defines both containers, the network, mounts, volumes
@@ -959,15 +1068,23 @@ docs/HOW-IT-WORKS.md        This document
 db/init/01_init.sql         Enables the pgvector extension. Runs once, ever.
 
 inbox/                      Drop zone. One folder per institution. Gitignored.
-  capital_one/  dcu/          ← the two active ones
+  capital_one/                ← the only automated source
   vanguard/  fidelity/  morgan_stanley/   ← kept but unused; see §1.1
+
+.github/workflows/
+  tests.yml                 CI: migrations from empty, drift check, tests — see §8
 
 backend/
   Dockerfile                How the API image is built
   pyproject.toml            Python dependencies
+  alembic.ini               Alembic config; the URL is set in env.py, not here
+  alembic/
+    env.py                  Takes the database URL from app.config — see §8
+    script.py.mako          Template new migrations are generated from
+    versions/               ★ One file per schema change, in order
 
   app/
-    main.py                 Starts FastAPI, creates tables, seeds institutions
+    main.py                 Starts FastAPI, seeds institutions, serves the UI at /
     config.py               Reads environment variables into a typed Settings object
     db.py                   Database connection and session management
     models.py               ★ The four tables. Start here to understand the data.
@@ -987,11 +1104,10 @@ backend/
       dedup.py              Fingerprinting, so re-dropping a file is a no-op
       pipeline.py           ★★ The orchestrator. The most important file here.
       parsers/
-        capital_one.py      ✅ CSV implemented + tested. PDF is a stub (optional).
-        dcu.py              🚧 Stub. THE next thing to write — see §1.1.
-        vanguard.py         ⬜ Descoped. Holdings entered by hand instead.
-        fidelity.py         ⬜ Descoped. Balances are PDF-only; hand-entered.
-        morgan_stanley.py   ⬜ Descoped. Excel, two reports; hand-entered.
+        capital_one.py      ✅ CSV, implemented and tested — the only parser.
+                              The DCU, Vanguard, Fidelity and Morgan Stanley
+                              stubs were deleted 2026-09-01; they had never run.
+                              Their export formats live in docs/DATA-SOURCES.md.
 
     classification/
       rules.py              Regex → category. The Phase 1 categorizer.
@@ -1001,6 +1117,10 @@ backend/
       router.py             ★ Aggregate vs semantic. The key routing decision.
       retrieval.py          ★ Vector search + the SQL rollups
       llm.py                The Claude call and the system prompt
+
+    static/
+      index.html            The chat UI, served at GET /. One self-contained
+                              file — no build step, no framework, no CDN.
 
   tests/
     fixtures/capital_one_sample.csv    4 synthetic rows, no real data
@@ -1013,7 +1133,7 @@ flow), `rag/router.py` (the key idea), `rag/retrieval.py` (both query paths).
 
 ---
 
-## 9. What's built and what isn't
+## 10. What's built and what isn't
 
 Everything marked ✅ has actually been run end to end on this machine, against a
 synthetic fixture. **The database is currently empty** — no real financial data has
@@ -1029,9 +1149,9 @@ been ingested yet.
 | Rule-based categorizer, 17-bucket taxonomy | ✅ Done, tested — rules beat issuer labels, `travel` bucket added |
 | REST endpoints | ✅ Done |
 | RAG chat with routing | ✅ Both routes verified on synthetic data |
-| DCU parser | 🚧 Stub — **the next thing to build**, and now half the pipeline |
+| DCU / Vanguard / Fidelity / Morgan Stanley parsers | ⬜ Descoped — stubs deleted 2026-09-01, see §1.1 |
 | Manual holdings entry (Vanguard / Fidelity / Morgan Stanley) | ⬜ Not started — the remaining half of net worth |
-| Cash balances in net worth | ⬜ Needs the DCU parser first |
+| Cash balances in net worth | ⬜ Descoped with the DCU parser |
 | Vanguard / Fidelity / Morgan Stanley parsers | ⬜ Descoped, see §1.1 |
 | All PDF parsers | ⬜ Descoped — optional backfill only |
 | scikit-learn categorizer | ⬜ Dropped, see §1.1 |
@@ -1057,17 +1177,19 @@ been ingested yet.
    the result length equals `k`, tell the LLM the list was truncated. Lower
    priority now that coarse questions route to SQL.
 5. **`/net-worth` excludes cash and says so** (`includes_cash: false`). Correct
-   behavior, but net worth stays incomplete until both the DCU parser and the
-   manual holdings snapshots exist.
+   behavior, but net worth stays incomplete until the manual holdings
+   snapshots exist.
 
-**One structural risk worth naming:** `main.py:33` uses `create_all()`, which
-creates missing tables but never migrates existing ones. There is no Alembic
-history and no backup. Switch to migrations before there is real data worth
-keeping.
+**One structural risk worth naming:** `aggregate_facts()` in `rag/retrieval.py`
+has no test coverage at all, and every test in the suite is pure-unit — there is
+no database fixture to build one on. That function supplies every number the model
+speaks, and the gap is how a monthly rollup that netted card payments into
+spending, and therefore reported a fall as a rise, survived from the day it was
+written.
 
 ---
 
-## 10. Glossary
+## 11. Glossary
 
 **API** — A way for programs to talk to each other over HTTP. You send a request to
 a URL, you get structured data back.
