@@ -1,0 +1,82 @@
+name: tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+
+    defaults:
+      run:
+        working-directory: backend
+
+    services:
+      # pgvector/pgvector rather than plain postgres: the embedding columns are
+      # of type vector, so the baseline migration cannot run without the
+      # extension being available to create.
+      postgres:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_USER: finsight
+          POSTGRES_PASSWORD: finsight
+          POSTGRES_DB: finsight
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd="pg_isready -U finsight"
+          --health-interval=5s
+          --health-timeout=5s
+          --health-retries=10
+
+    env:
+      # The service container is reachable on localhost; the app's own default
+      # points at the compose setup's port 5433, so it has to be overridden.
+      DATABASE_URL: postgresql+psycopg://finsight:finsight@localhost:5432/finsight
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: backend/pyproject.toml
+
+      # Mirrors backend/Dockerfile. camelot-py pulls in opencv, which needs
+      # libGL present at import time even when nothing calls it.
+      - name: Install system libraries
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends ghostscript libgl1
+
+      # sentence-transformers depends on torch, whose default PyPI wheel carries
+      # the CUDA runtime — a gigabyte-plus of GPU libraries a CI runner cannot
+      # use. Installing the CPU build first means the resolver is already
+      # satisfied when the real install runs.
+      - name: Install CPU-only torch
+        run: pip install --index-url https://download.pytorch.org/whl/cpu torch
+
+      # The full dependency set, dev extras included, exactly as the Dockerfile
+      # installs it. Installing a trimmed test-only subset here would defeat the
+      # point: the bug that prompted this workflow was pytest missing from the
+      # image because `-e .` omits the [dev] extras.
+      - name: Install project
+        run: pip install -e ".[dev]"
+
+      # Proves the migrations build the schema from nothing. The baseline was
+      # generated against a scratch database precisely because it could not be
+      # verified against a database create_all() had already populated; this is
+      # that check, run on every push.
+      - name: Apply migrations to an empty database
+        run: alembic upgrade head
+
+      # Fails if models.py has drifted from the migrations — i.e. someone edited
+      # a model without generating a revision.
+      - name: Check for schema drift
+        run: alembic check
+
+      - name: Run tests
+        run: pytest -q

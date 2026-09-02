@@ -250,10 +250,12 @@ above breadth of integrations, and it is why the DCU parser is *not* on this lis
 A second CSV parser shows nothing the first one does not.
 
 1. ~~Alembic migrations~~ — **done 2026-09-01** (§4).
-2. **CI: GitHub Actions running `pytest`.** ~20 lines, and now demonstrably
-   load-bearing: the Dockerfile installed `-e .` without the `[dev]` extras, so
-   pytest was never in the image and the suite only ran in containers where
-   someone had installed it by hand. CI would have caught that on day one.
+2. ~~CI~~ — **done 2026-09-01.** `.github/workflows/tests.yml`: pgvector service
+   container, full `-e ".[dev]"` install (deliberately not a trimmed test-only
+   subset — the bug that prompted it was a dependency-install bug), then
+   `alembic upgrade head` against an empty database, `alembic check` for drift,
+   then `pytest`. CPU-only torch is installed first so the runner does not pull
+   a gigabyte of unusable CUDA libraries.
 3. **A DB session fixture + tests for `aggregate_facts()`** (§5.1). Every test in
    the suite is currently pure-unit; there is no `conftest.py`. This is the gap
    that hid the sign inversion.

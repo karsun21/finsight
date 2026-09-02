@@ -1,15 +1,17 @@
 # FinSight
 
+[![tests](https://github.com/karsun21/finsight/actions/workflows/tests.yml/badge.svg)](https://github.com/karsun21/finsight/actions/workflows/tests.yml)
+
 Personal finance RAG assistant. Ingests statement exports from your bank and
 credit card, normalizes them into one schema, and answers natural-language
 questions about spending and net worth — running entirely on your own machine
 except for the one API call that phrases the answer.
 
-Transaction ingestion is automated for **DCU** (cash) and **Capital One**
-(credit). Investment balances from Vanguard, Fidelity, and Morgan Stanley are
-entered as hand-typed quarterly snapshots rather than parsed — those three export
-formats are the most expensive to support and the balances move slowly enough
-that automation doesn't pay for itself. Reasoning in
+Transaction ingestion is automated for **Capital One** (credit). Investment
+balances from Vanguard, Fidelity, and Morgan Stanley are entered as hand-typed
+quarterly snapshots rather than parsed — those three export formats are the most
+expensive to support and the balances move slowly enough that automation doesn't
+pay for itself. Reasoning in
 [`docs/HOW-IT-WORKS.md`](docs/HOW-IT-WORKS.md) §1.1.
 
 Design plan: `FinSight-Design-Plan.md`.
@@ -31,11 +33,13 @@ categorized end to end.
 | Dedup — content-hash file skip, plus within-file identical charges | ✅ with tests |
 | Rule-based categorizer, 18-bucket taxonomy | ✅ with tests |
 | REST endpoints (`/transactions`, `/holdings`, `/net-worth`, `/allocation`, `/ingestion-log`) | ✅ |
-| RAG chat (`/chat`) with aggregate-vs-semantic routing | ⚠️ both routes exercised on synthetic fixtures only — **not yet asked a real question** |
-| DCU parser | 🚧 stub — the next thing to build |
+| RAG chat (`/chat`) with aggregate-vs-semantic routing | ✅ both routes verified against real data |
+| Chat UI at `/` — single HTML file served by the API | ✅ |
+| Alembic migrations, applied on container start | ✅ |
+| CI — migrations from empty, drift check, tests | ✅ |
 | Manual holdings entry (the other half of net worth) | ⬜ not started |
-| Vanguard / Fidelity / Morgan Stanley parsers, all PDF parsers | ⬜ descoped, see §1.1 |
-| Scheduled jobs, React frontend | ⬜ not started |
+| DCU, Vanguard, Fidelity, Morgan Stanley parsers, all PDF parsers | ⬜ descoped, see §1.1 |
+| Scheduled jobs, React dashboard | ⬜ not planned |
 
 ## Quick start
 
@@ -135,13 +139,14 @@ Machine-specific gotchas for the current environment live in
 
 ## Next steps
 
-1. Export one month from DCU and implement `DCUCSVParser` against the real
-   header — it is currently a stub written against a guess, and it is now half
-   the ingestion pipeline.
-2. Manual holdings entry, so net worth becomes a complete number.
-3. Signal truncation on the semantic retrieval path, so the LLM can't sum 20 of
+1. Tests for `aggregate_facts()`. Every test in the suite is pure-unit and there
+   is no database fixture, which is how a monthly rollup that netted card
+   payments into spending — and therefore reported a fall as a rise — survived
+   from the day it was written.
+2. Signal truncation on the semantic retrieval path, so the LLM can't sum 20 of
    30 relevant rows and sound certain about it.
-4. Alembic. `create_all()` cannot alter existing tables, and there is real data
-   now.
+3. Spend-by-category-per-month, which the model asks for unprompted whenever it
+   is asked what drove a change.
+4. Manual holdings entry, so net worth becomes a complete number.
 
 See [`docs/PROJECT-STATE.md`](docs/PROJECT-STATE.md) for the full open-issue list.
