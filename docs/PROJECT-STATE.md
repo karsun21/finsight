@@ -66,7 +66,8 @@ not fixtures.
   aggregate-vs-semantic split visible rather than merely claimed.
 - **`_coverage_facts()` executes and its partial-month clause does its job** —
   April and July are correctly excluded from trend comparisons
-- Test suite green in the container: **77 passing**
+- Test suite green in the container: **84 passing**, including a real-Postgres
+  fixture (`tests/conftest.py`) against a separate `finsight_test` database
 
 > The previous version of this file said "49 passing" — it was stale by 23 tests.
 > Treat counts in handoff notes as decaying; re-run rather than quote.
@@ -201,6 +202,19 @@ it is a grab bag rather than a category, which is why it maps to `None`. The fou
 `health`/`entertainment` rows are the fitness reclassification, previously known
 only from delta arithmetic.
 
+**`aggregate_facts()` now has tests, and they were verified to fail.** A DB
+fixture (`tests/conftest.py`) creates a separate `finsight_test` database and runs
+each test inside a transaction that is rolled back, so the real data is never in
+the path. Seven tests cover the netting regression, the partial-month guard,
+category grouping, and the empty-database case.
+
+Passing tests against already-correct code prove nothing, so the netted rollup was
+temporarily reinstated: two tests failed with
+`a spending figure came out positive: Spending 2026-05: $400.00` — the same shape
+of number that made the model report a fall as a rise. **Do this whenever a
+regression test is added after the fact**; a test that has never been seen to fail
+is a guess.
+
 **pytest was never in the image.** The Dockerfile ran `pip install -e .`, which
 omits the `[dev]` extras. The suite had been passing only because some earlier
 session pip-installed pytest into a container's writable layer; recreating the
@@ -211,34 +225,28 @@ failed. Fixed to `-e ".[dev]"`. This is the argument for CI in one incident.
 
 ## 5. Open issues, in priority order
 
-**1. `aggregate_facts()` has no test coverage at all.** This is why the sign
-inversion above survived from the day it was written. Every test in the suite is
-pure-unit; there is no DB session fixture and no `conftest.py`. Adding one is the
-prerequisite for testing the whole aggregate path. **Highest priority** — it is
-the gap that hides this entire class of bug.
-
-**2. No category×month cross-tab.** `aggregate_facts()` gives category totals for
+**1. No category×month cross-tab.** `aggregate_facts()` gives category totals for
 the whole period and month totals across all categories, but never the two
 crossed. "Which categories drove the May→June decline?" is unanswerable, and the
 model has now flagged this itself, unprompted, on two separate questions.
 
-**3. `rag/retrieval.py` semantic path truncates silently.** Returns exactly
+**2. `rag/retrieval.py` semantic path truncates silently.** Returns exactly
 `retrieval_top_k` (20) rows with no signal that more matched, so Claude can sum 20
 of 30 relevant rows and state a confident wrong total. Both semantic calls this
 session returned exactly 20. Mitigation: when the result count equals `k`, say so
 in the facts — the same technique `_coverage_facts()` uses.
 
-**4. `/net-worth` excludes cash and says so** (`includes_cash: false`). Correct,
+**3. `/net-worth` excludes cash and says so** (`includes_cash: false`). Correct,
 but net worth stays incomplete until hand-entered holdings snapshots exist.
 
-**5. `scikit-learn` is still in `pyproject.toml`** and nothing imports it.
+**4. `scikit-learn` is still in `pyproject.toml`** and nothing imports it.
 
-**6. `make test` in the Makefile is wrong** — it runs `cd backend && pytest -q` on
+**5. `make test` in the Makefile is wrong** — it runs `cd backend && pytest -q` on
 the host, which has neither pytest nor a new enough Python. Should be
 `docker compose exec api pytest -q`. (Moot until `make` is installed; see §7.)
 
-*Closed 2026-09-01: no migrations (now Alembic, §4) and no `issuer_category`
-column (now present and populated for all 196 rows, §4).*
+*Closed 2026-09-01: no migrations (now Alembic), no `issuer_category` column,
+and `aggregate_facts()` having no test coverage — all §4.*
 
 ---
 
@@ -256,15 +264,13 @@ A second CSV parser shows nothing the first one does not.
    `alembic upgrade head` against an empty database, `alembic check` for drift,
    then `pytest`. CPU-only torch is installed first so the runner does not pull
    a gigabyte of unusable CUDA libraries.
-3. **A DB session fixture + tests for `aggregate_facts()`** (§5.1). Every test in
-   the suite is currently pure-unit; there is no `conftest.py`. This is the gap
-   that hid the sign inversion.
+3. ~~DB fixture + `aggregate_facts()` tests~~ — **done 2026-09-01** (§4).
 4. **README with an architecture summary, a real `/chat` transcript, and a
    `/docs` screenshot**, plus a synthetic demo dataset grown from
    `capital_one_sample.csv`. The repo is private and full of real data, so this is
    how anyone else ever sees it work.
-5. Category×month cross-tab (§5.2) — closes the gap the model keeps flagging.
-6. Truncation signal on the semantic path (§5.3).
+5. Category×month cross-tab (§5.1) — closes the gap the model keeps flagging.
+6. Truncation signal on the semantic path (§5.2).
 7. Manual holdings entry — probably a generic `inbox/holdings/*.csv` parser so a
    few hand-typed rows a quarter flow through the same pipeline. This, not DCU,
    is what unlocks net worth: DCU is cash, holdings are the investments.
