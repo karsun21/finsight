@@ -14,8 +14,11 @@ data/
 *.qfx
 *.ofx
 *.qbo
-# ...except synthetic test fixtures, which contain no real data
+# ...except synthetic test fixtures and the demo dataset, which contain no real
+# data. Both are invented amounts and dates against real merchant brands, so the
+# categorization rules have something to match. Keep it that way.
 !backend/tests/fixtures/**
+!demo/**
 
 # Python
 __pycache__/

@@ -47,22 +47,70 @@ categorized end to end.
 cp .env.example .env          # then set ANTHROPIC_API_KEY
 docker compose up --build     # first build pulls torch — expect ~10 min and ~3 GB
 curl localhost:8000/health
-open http://localhost:8000/docs
 ```
+
+Then open **http://localhost:8000** for the chat UI, or
+**http://localhost:8000/docs** for the interactive API reference FastAPI
+generates from the route signatures.
 
 Drop statement exports into `inbox/<institution>/` and trigger a run:
 
 ```bash
-curl -X POST localhost:8000/ingest
-curl localhost:8000/ingestion-log
+curl -sS -X POST localhost:8000/ingest
+curl -sS localhost:8000/ingestion-log
 ```
 
 Ask a question:
 
 ```bash
-curl -X POST localhost:8000/chat -H 'content-type: application/json' \
-  -d '{"question": "How much did I spend on dining last month?"}'
+curl -sS -X POST localhost:8000/chat -H 'content-type: application/json' -d '{"question": "How much did I spend on dining?"}'
 ```
+
+## Try it without any real data
+
+`demo/` holds 50 synthetic transactions across three statement exports — invented
+amounts and dates, real merchant brands so the categorization rules have something
+to match.
+
+```bash
+cp demo/capital_one/demo_*.csv inbox/capital_one/
+curl -sS -X POST localhost:8000/ingest
+```
+
+`files_seen: 3, files_ingested: 3, rows_ingested: 50`, and zero uncategorized
+rows. What that data then shows — a real transcript, not an illustration:
+
+**Aggregate route.** The number is computed in SQL; the model only phrases it.
+
+> **How much did I spend on dining?** — `aggregate · 22 facts from SQL`
+>
+> You spent $143.75 on dining across 9 transactions.
+
+**The partial-month guard.** Statement cycles run mid-month to mid-month, so the
+first and last calendar months are fractions. A naive reading calls July a
+collapse in spending; it is eleven days long.
+
+> **How has my spending changed month to month?** — `aggregate · 22 facts from SQL`
+>
+> May was your biggest spending month at $981.54, dropping to $407.01 in June — a
+> decrease of about $574.53.
+>
+> April ($344.35) and July ($133.02) can't be fairly compared since both are
+> partial months in your data (April starts 04-11, July ends 07-11), so those
+> totals don't reflect full-month spending.
+
+**Semantic route, and an honest non-answer.** Two merchants in the demo data
+contain the word "storage" — one is housing, one is a subscription.
+
+> **What was that charge from the storage place?** — `semantic · top 20 rows by similarity`
+>
+> There are two "storage" charges in your data — which one did you mean?
+>
+> - **Public Storage**: $53.31 (most recent on June 25)
+> - **Google One Storage**: $2.99 (most recent on June 21)
+
+See [`demo/README.md`](demo/README.md) for what else the dataset is built to
+demonstrate, and how to clear it again.
 
 ## Tests
 
@@ -83,12 +131,16 @@ codes are genericized.
 backend/app/
   api/routes/       FastAPI endpoints
   ingestion/        pipeline, dedup, registry
-  ingestion/parsers/  one module per institution
-  classification/   rule-based categorizer
+  ingestion/parsers/  currently just Capital One; see docs/HOW-IT-WORKS.md §1.1
+  classification/   rule-based categorizer — the taxonomy is the product
   rag/              embeddings, retrieval, query router, Claude call
+  static/           the chat UI, one self-contained HTML file served at /
+backend/alembic/    migrations — one file per schema change, in order
+.github/workflows/  CI: migrations from empty, drift check, tests
 db/init/            pgvector extension setup (runs once on first `up`)
 inbox/              drop zone, one folder per institution — gitignored
-docs/               data source validation
+demo/               50 synthetic transactions, safe to commit and to run
+docs/               architecture, data source validation, project state
 ```
 
 ## How it fits together

@@ -215,6 +215,24 @@ of number that made the model report a fall as a rise. **Do this whenever a
 regression test is added after the fact**; a test that has never been seen to fail
 is a guess.
 
+**A demo dataset, so the project is runnable by someone else.** `demo/` holds 50
+synthetic Capital One transactions across three exports — invented amounts and
+dates, real merchant brands so the rules have something to match. It parses with
+zero warnings and **zero uncategorized rows**, and its window (2026-04-11 →
+2026-07-11) mirrors real statement cycles so April and July are partial months and
+the coverage guard is exercised. Two merchants contain the word "storage" — one
+housing, one a subscription — so the semantic route demonstrably asks which was
+meant rather than guessing. The README carries a verified transcript of all three
+question shapes run against it.
+
+Two near-misses worth recording. The demo files were originally named
+`capital_one_2026-05.csv` and so on — **identical to the real exports**, so the
+documented `cp` would have overwritten real statements. They are `demo_*.csv` now,
+a glob that cannot match a real export. And `.gitignore` excludes `*.csv`
+wholesale, so the dataset would have been silently absent from the repo while the
+README pointed at it; `!demo/**` was added beside the existing test-fixture
+exception.
+
 **pytest was never in the image.** The Dockerfile ran `pip install -e .`, which
 omits the `[dev]` extras. The suite had been passing only because some earlier
 session pip-installed pytest into a container's writable layer; recreating the
@@ -265,10 +283,7 @@ A second CSV parser shows nothing the first one does not.
    then `pytest`. CPU-only torch is installed first so the runner does not pull
    a gigabyte of unusable CUDA libraries.
 3. ~~DB fixture + `aggregate_facts()` tests~~ — **done 2026-09-01** (§4).
-4. **README with an architecture summary, a real `/chat` transcript, and a
-   `/docs` screenshot**, plus a synthetic demo dataset grown from
-   `capital_one_sample.csv`. The repo is private and full of real data, so this is
-   how anyone else ever sees it work.
+4. ~~README + demo dataset~~ — **done 2026-09-01** (§4).
 5. Category×month cross-tab (§5.1) — closes the gap the model keeps flagging.
 6. Truncation signal on the semantic path (§5.2).
 7. Manual holdings entry — probably a generic `inbox/holdings/*.csv` parser so a
