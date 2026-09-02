@@ -6,9 +6,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 
 from app.api.routes import analytics, chat, health, holdings, ingest, transactions
-from app.db import SessionLocal, engine
+from app.db import SessionLocal
 from app.ingestion.pipeline import ensure_institutions
-from app.models import Base
 
 logging.basicConfig(level=logging.INFO)
 
@@ -32,9 +31,13 @@ app.add_middleware(
 
 @app.on_event("startup")
 def on_startup() -> None:
-    # create_all is fine while the schema is still moving. Switch to Alembic
-    # migrations before there is data in the database you care about keeping.
-    Base.metadata.create_all(bind=engine)
+    # Schema is owned by Alembic, applied by `alembic upgrade head` in the
+    # container command before uvicorn starts — not here. create_all() used to
+    # run at this point, which created missing tables but silently ignored
+    # changes to existing ones; adding file_hash to ingestion_log appeared to
+    # work and then failed at query time.
+    #
+    # Seeding institutions is data, not schema, so it stays. It is idempotent.
     with SessionLocal() as db:
         ensure_institutions(db)
 

@@ -154,6 +154,7 @@ def _persist(db, parsed, institution_id: int, institution_name: str, file_name: 
                 description=txn.description,
                 amount=txn.amount,
                 category=resolve_category(txn.description, txn.category),
+                issuer_category=txn.category,
                 source_file=file_name,
                 dedup_hash=digest,
             )

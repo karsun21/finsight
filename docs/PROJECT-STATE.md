@@ -161,6 +161,52 @@ This is the most instructive bug so far: well-formatted, confident, and
 **backwards**, in a function with no test coverage, sitting there since the
 aggregate path was written.
 
+**Alembic, replacing `create_all()`.** `backend/alembic/`, with `env.py` taking
+the URL from `app.config` rather than `alembic.ini` (blanked, with a comment)
+so the app and its migrations cannot disagree about which database they mean.
+`compare_type=True` is set — without it a `VARCHAR(32)` → `VARCHAR(64)` change is
+silently ignored. `script.py.mako` imports `pgvector.sqlalchemy`, because
+autogenerate renders the embedding columns as
+`pgvector.sqlalchemy.vector.VECTOR(dim=384)` without adding the import, and every
+migration touching them would otherwise die with a `NameError`.
+
+The baseline had to be generated against a **scratch database** — autogenerating
+against `finsight`, where `create_all()` had already built the tables, produces
+an empty migration. It was then proved on a bare database (no tables, no
+extension) before the live one was stamped, and `alembic check` confirms the
+stamp is honest rather than hiding drift. The migration creates the `vector`
+extension itself: `db/init/01_init.sql` only runs on first compose up against an
+empty volume, so a migration depending on it is not self-sufficient.
+
+Migrations now run in the container command before uvicorn, so an un-migrated
+database fails at boot rather than at the first query hitting a missing column.
+
+**`issuer_category`, and what it revealed.** Added as the first real migration —
+`1a47c85fc709 → 9aebc89a15f0` against the live database, reversible, 196 rows and
+the −3653.51 invariant intact through the `ALTER`. Backfilled by re-ingest;
+populated for all 196 rows. The provenance it exposes confirms decisions
+previously made from inference alone:
+
+| resolved | issuer label | n |
+|---|---|---|
+| transport | other travel | 39 |
+| housing | other travel | 1 |
+| travel | other travel | 3 |
+| health | entertainment | 4 |
+| subscriptions | internet | 1 |
+| groceries | merchandise | 6 |
+
+`other travel` yields 43 rows across three resolved categories — direct evidence
+it is a grab bag rather than a category, which is why it maps to `None`. The four
+`health`/`entertainment` rows are the fitness reclassification, previously known
+only from delta arithmetic.
+
+**pytest was never in the image.** The Dockerfile ran `pip install -e .`, which
+omits the `[dev]` extras. The suite had been passing only because some earlier
+session pip-installed pytest into a container's writable layer; recreating the
+container destroyed it. On a fresh clone the documented test command would have
+failed. Fixed to `-e ".[dev]"`. This is the argument for CI in one incident.
+
 ---
 
 ## 5. Open issues, in priority order
@@ -182,23 +228,17 @@ of 30 relevant rows and state a confident wrong total. Both semantic calls this
 session returned exactly 20. Mitigation: when the result count equals `k`, say so
 in the facts — the same technique `_coverage_facts()` uses.
 
-**4. No `issuer_category` column.** We store the *resolved* category and discard
-Capital One's original label, so "why is this row in this bucket?" is not
-answerable in SQL. Adding it needs one `ALTER TABLE` (see §7).
+**4. `/net-worth` excludes cash and says so** (`includes_cash: false`). Correct,
+but net worth stays incomplete until hand-entered holdings snapshots exist.
 
-**5. `/net-worth` excludes cash and says so** (`includes_cash: false`). Correct,
-but net worth stays incomplete until the DCU parser and the manual holdings
-snapshots exist.
+**5. `scikit-learn` is still in `pyproject.toml`** and nothing imports it.
 
-**6. No migrations.** `main.py` uses `create_all()`, which creates missing tables
-but never alters existing ones. There is real data now and no backup. **Switch to
-Alembic before the next schema change.**
-
-**7. `scikit-learn` is still in `pyproject.toml`** and nothing imports it.
-
-**8. `make test` in the Makefile is wrong** — it runs `cd backend && pytest -q` on
+**6. `make test` in the Makefile is wrong** — it runs `cd backend && pytest -q` on
 the host, which has neither pytest nor a new enough Python. Should be
 `docker compose exec api pytest -q`. (Moot until `make` is installed; see §7.)
+
+*Closed 2026-09-01: no migrations (now Alembic, §4) and no `issuer_category`
+column (now present and populated for all 196 rows, §4).*
 
 ---
 
@@ -209,12 +249,11 @@ résumé for **mid-level backend roles**. That ranks demonstrated engineering ri
 above breadth of integrations, and it is why the DCU parser is *not* on this list.
 A second CSV parser shows nothing the first one does not.
 
-1. **Alembic migrations** (§5.6). The most visible toy pattern in the repo —
-   `create_all()` cannot alter existing tables, and it already bit once when
-   `file_hash` was added. Schema evolution is a daily backend concern and its
-   absence is conspicuous. Do it before any schema change.
-2. **CI: GitHub Actions running `pytest`.** ~20 lines. 77 passing tests that
-   nothing runs automatically is a wasted signal.
+1. ~~Alembic migrations~~ — **done 2026-09-01** (§4).
+2. **CI: GitHub Actions running `pytest`.** ~20 lines, and now demonstrably
+   load-bearing: the Dockerfile installed `-e .` without the `[dev]` extras, so
+   pytest was never in the image and the suite only ran in containers where
+   someone had installed it by hand. CI would have caught that on day one.
 3. **A DB session fixture + tests for `aggregate_facts()`** (§5.1). Every test in
    the suite is currently pure-unit; there is no `conftest.py`. This is the gap
    that hid the sign inversion.
@@ -227,7 +266,6 @@ A second CSV parser shows nothing the first one does not.
 7. Manual holdings entry — probably a generic `inbox/holdings/*.csv` parser so a
    few hand-typed rows a quarter flow through the same pipeline. This, not DCU,
    is what unlocks net worth: DCU is cash, holdings are the investments.
-8. The `issuer_category` column (§5.4).
 
 **Explicitly not doing:** the DCU parser, and the Phase 3 React dashboard. If DCU
 is ever revived it needs a real export header from the owner first, and
@@ -318,12 +356,28 @@ docker compose exec db psql -U finsight -d finsight -c "SELECT category, count(*
 down -v` **destroys it** — and also wipes `hfcache`, forcing a re-download of the
 embedding model. There is no backup and no migration history.
 
-**Adding a column** (until Alembic exists): `create_all()` will not alter an
-existing table, so do it by hand and restart:
+**Adding a column.** Edit `models.py`, then autogenerate and apply. Never hand-write
+an `ALTER TABLE` against the database — the whole point of Alembic is that the
+schema's history is in the repo.
 
 ```bash
-docker compose exec db psql -U finsight -d finsight -c "ALTER TABLE transactions ADD COLUMN issuer_category VARCHAR(64);"
-docker compose restart api
+docker compose exec api alembic revision --autogenerate -m "what changed"
+```
+
+Read the generated file in `backend/alembic/versions/` before applying it —
+autogenerate proposes, it does not decide. Then:
+
+```bash
+docker compose exec api alembic upgrade head
+```
+
+`docker compose up -d api` also applies migrations, since they run in the
+container command before uvicorn. Useful checks:
+
+```bash
+docker compose exec api alembic current   # what revision is this database on
+docker compose exec api alembic check     # do the models match the schema
+docker compose exec api alembic downgrade -1
 ```
 
 ---

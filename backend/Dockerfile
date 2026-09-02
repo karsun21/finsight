@@ -10,7 +10,13 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 WORKDIR /srv
 
 COPY pyproject.toml ./
-RUN pip install --no-cache-dir -e .
+# The [dev] extras (pytest et al) are installed deliberately: this image is the
+# only place tests run — the host has neither pytest nor a new enough Python —
+# and `docker compose exec api pytest` is the documented command. Installing
+# just `-e .` left pytest out of the image entirely, so the suite only ran in
+# containers where someone had pip-installed it by hand, and vanished the moment
+# a container was recreated. A production build would target a stage without them.
+RUN pip install --no-cache-dir -e ".[dev]"
 
 COPY . .
 

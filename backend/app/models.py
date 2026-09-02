@@ -38,6 +38,11 @@ class Transaction(Base):
     # responsible for flipping institution-specific conventions to match.
     amount: Mapped[Decimal] = mapped_column(Numeric(14, 2))
     category: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
+    # The issuer's own label, kept verbatim alongside our resolved category so
+    # "why is this row in this bucket?" is answerable in SQL. Diagnosing the
+    # travel-vs-transport problem meant re-running the rules by hand because
+    # this was discarded. Not indexed: it is for inspection, not filtering.
+    issuer_category: Mapped[str | None] = mapped_column(String(64), nullable=True)
     is_recurring: Mapped[bool] = mapped_column(Boolean, default=False)
     source_file: Mapped[str] = mapped_column(Text)
     # sha256 over (institution, txn_date, amount, normalized description) — the
