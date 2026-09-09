@@ -15,9 +15,9 @@ router = APIRouter(tags=["analytics"])
 def net_worth(db: Session = Depends(get_db)) -> dict:
     """Investment market value over time, plus the current total.
 
-    Cash balances are not included yet — that needs a running balance from the
-    DCU parser, which does not exist. The response says so rather than silently
-    reporting a partial number as "net worth".
+    Cash balances are not included yet — that needs a running balance from a
+    checking-account parser, which is out of scope. The response says so rather
+    than silently reporting a partial number as "net worth".
     """
     series = db.execute(
         select(Holding.as_of_date, func.sum(Holding.market_value))

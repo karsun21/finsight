@@ -66,9 +66,9 @@ def _coverage_facts(db: Session) -> list[str]:
     Without this the rollups are correct and the conclusions drawn from them are
     not. Statement exports open and close mid-cycle, so the first and last
     calendar months hold a fraction of a month's spending. Handed a bare "July =
-    $364.58" next to "June = $1,017.04", the model reports a 65% collapse in
-    spending, confidently and wrongly. Nothing in the numbers reveals that July
-    is eleven days long — so the fact has to be said out loud.
+    $133.02" next to "June = $407.01", the model reports a collapse in spending,
+    confidently and wrongly. Nothing in the numbers reveals that July is eleven
+    days long — so the fact has to be said out loud.
     """
     first, last, count = db.execute(
         select(
@@ -137,8 +137,8 @@ def aggregate_facts(db: Session) -> list[str]:
     # Spending and payments are reported as separate facts, never netted. A card
     # statement carries one payment per cycle, so a single sum(amount) per month
     # is dominated by the payment and flips sign: asked how spending changed
-    # month to month, the model read May->June as a $135.77 *rise* when spending
-    # had in fact *fallen* $399. Handing it a netted figure guarantees that.
+    # month to month, the model read the netted total as a *rise* when spending
+    # had in fact *fallen*. Handing it a netted figure guarantees that.
     is_spend = func.coalesce(Transaction.category, "").notin_(NON_SPEND_CATEGORIES)
     monthly = db.execute(
         select(

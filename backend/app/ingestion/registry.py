@@ -12,12 +12,10 @@ from app.ingestion.parsers.capital_one import CapitalOneCSVParser
 
 # Folder name under inbox/ -> parsers to try, in order.
 #
-# Only Capital One is automated. Vanguard, Fidelity, and Morgan Stanley are
-# hand-entered quarterly holdings snapshots by design, not a backlog: their
-# parsers are the most expensive to write and add no architecture the Capital
-# One path does not already demonstrate. Their export formats — Vanguard's
-# multi-section CSV, Fidelity's PDF-only balances, Morgan Stanley's two .xlsx
-# reports — are documented in docs/DATA-SOURCES.md if that ever changes.
+# Only the credit card path is automated. Investment accounts are hand-entered
+# quarterly holdings snapshots by design, not a backlog: those parsers are the
+# most expensive to write and add no architecture this one does not already
+# demonstrate. See docs/HOW-IT-WORKS.md §1.1.
 PARSERS: dict[str, list[type[BaseParser]]] = {
     "capital_one": [CapitalOneCSVParser],
 }

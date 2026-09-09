@@ -2,22 +2,22 @@
 
 [![tests](https://github.com/karsun21/finsight/actions/workflows/tests.yml/badge.svg)](https://github.com/karsun21/finsight/actions/workflows/tests.yml)
 
-Personal finance RAG assistant. Ingests statement exports from your bank and
-credit card, normalizes them into one schema, and answers natural-language
-questions about spending and net worth — running entirely on your own machine
-except for the one API call that phrases the answer.
+Personal finance RAG assistant. Ingests credit card statement exports,
+normalizes them into one schema, and answers natural-language questions about
+spending — running entirely on your own machine except for the one API call that
+phrases the answer.
 
-Transaction ingestion is automated for **Capital One** (credit). Investment
-balances from Vanguard, Fidelity, and Morgan Stanley are entered as hand-typed
-quarterly snapshots rather than parsed — those three export formats are the most
+Net worth is modelled in the schema and served by `/net-worth` and `/allocation`,
+but no holdings are entered yet, so both return zero. See Status.
+
+Transaction ingestion is automated for **Capital One** CSV exports. Investment
+balances are entered as hand-typed quarterly snapshots rather than parsed —
+those export formats are the most
 expensive to support and the balances move slowly enough that automation doesn't
 pay for itself. Reasoning in
 [`docs/HOW-IT-WORKS.md`](docs/HOW-IT-WORKS.md) §1.1.
 
-Design plan: `FinSight-Design-Plan.md`.
 How it all works, from scratch (start here): [`docs/HOW-IT-WORKS.md`](docs/HOW-IT-WORKS.md).
-Current state, open issues, environment notes: [`docs/PROJECT-STATE.md`](docs/PROJECT-STATE.md).
-Data source validation (read this before writing a parser): [`docs/DATA-SOURCES.md`](docs/DATA-SOURCES.md).
 
 ## Status
 
@@ -38,7 +38,7 @@ categorized end to end.
 | Alembic migrations, applied on container start | ✅ |
 | CI — migrations from empty, drift check, tests | ✅ |
 | Manual holdings entry (the other half of net worth) | ⬜ not started |
-| DCU, Vanguard, Fidelity, Morgan Stanley parsers, all PDF parsers | ⬜ descoped, see §1.1 |
+| Parsers for other account types, all PDF parsers | ⬜ descoped, see §1.1 |
 | Scheduled jobs, React dashboard | ⬜ not planned |
 
 ## Quick start
@@ -145,7 +145,7 @@ docs/               architecture, data source validation, project state
 
 ## How it fits together
 
-Ingestion is **folder-driven**: dropping a file into `inbox/vanguard/` is what
+Ingestion is **folder-driven**: dropping a file into `inbox/capital_one/` is what
 declares its institution, so parser dispatch only has to detect the *format*.
 `app/ingestion/registry.py` maps folder + extension to a parser class.
 
@@ -173,8 +173,8 @@ to `version: "3.8"` syntax so it runs on Compose v2.2 and later.
 
 The Phase 3 React frontend will need Node 18+ when it exists. Nothing else does.
 
-Machine-specific gotchas for the current environment live in
-[`docs/PROJECT-STATE.md`](docs/PROJECT-STATE.md) §7, not here.
+Everything runs in containers, so the host toolchain does not matter beyond
+Docker itself.
 
 ## Security
 
@@ -201,4 +201,5 @@ Machine-specific gotchas for the current environment live in
    is asked what drove a change.
 4. Manual holdings entry, so net worth becomes a complete number.
 
-See [`docs/PROJECT-STATE.md`](docs/PROJECT-STATE.md) for the full open-issue list.
+Design decisions and the reasoning behind the scope are in
+[`docs/HOW-IT-WORKS.md`](docs/HOW-IT-WORKS.md) §1.1 and §7.

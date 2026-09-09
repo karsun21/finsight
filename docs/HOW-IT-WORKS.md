@@ -27,12 +27,12 @@ Read it top to bottom. Each part builds on the one before.
 
 ## 1. What FinSight is
 
-You have money in five places: a checking account at DCU, a Capital One credit
-card, a Vanguard brokerage account, a Fidelity 401(k), and Morgan Stanley ESPP
-shares. Each one has its own website, its own login, its own idea of what a
-"transaction" looks like. None of them talk to each other. If you want to know
-what you spent on dining last quarter, or how much of your net worth is tied up in
-your employer's stock, you're opening five tabs and doing arithmetic by hand.
+Money tends to sit in several places at once: a checking account, a credit card,
+a brokerage account, a retirement account, an employer stock plan. Each has its
+own website, its own login, and its own idea of what a "transaction" looks like.
+None of them talk to each other. To find out what you spent on dining last
+quarter, or how much of your net worth is tied up in one employer's stock, you
+open five tabs and do arithmetic by hand.
 
 FinSight is a program that:
 
@@ -45,20 +45,21 @@ That last part is the interesting one, and it's where RAG comes in.
 
 ### 1.1 Scope: one source automated, the rest entered by hand
 
-The five institutions are **not** treated equally, and that's a deliberate
-decision rather than unfinished work.
+Account types are **not** treated equally, and that's a deliberate decision
+rather than unfinished work.
 
-| | Institutions | How data arrives | Why |
+| | Account type | How data arrives | Why |
 |---|---|---|---|
-| **Automated** | Capital One (credit) | CSV → `inbox/` → parser → `transactions` | This is where *spending* lives, it changes daily, and it's thousands of rows. Automation earns its keep. |
-| **Manual** | Vanguard, Fidelity, Morgan Stanley | A holdings snapshot entered by hand, quarterly | These are *balances*, not events. They move slowly, they're a handful of rows, and their export formats are the three worst in the set. |
+| **Automated** | Credit card | CSV → `inbox/` → parser → `transactions` | This is where *spending* lives, it changes daily, and it runs to thousands of rows. Automation earns its keep. |
+| **Manual** | Brokerage, retirement, equity plan | A holdings snapshot entered by hand, quarterly | These are *balances*, not events. They move slowly, they're a handful of rows, and their export formats are the worst in the set. |
 
-The reasoning: parsers three, four, and five would add no new architecture — each
-is another "read a file, rename the columns, flip a sign." They'd also be the most
-expensive ones to write. Vanguard's CSV has multiple sections stacked in one file.
-Morgan Stanley is `.xlsx` and needs two separate reports. Fidelity's CSV is
-activity-only, so the per-fund 401(k) balances that actually matter for net worth
-exist **only** in a quarterly PDF statement.
+The reasoning: the investment parsers would add no new architecture — each is
+another "read a file, rename the columns, flip a sign" — while being the most
+expensive ones to write. One brokerage exports a multi-section CSV with two
+different blocks stacked in a single file. An equity plan provider ships `.xlsx`
+and needs two separate reports combined. A retirement provider's CSV is
+activity-only, so the per-fund balances that actually matter for net worth exist
+**only** inside a quarterly PDF statement.
 
 Against that: a 401(k) balance changes slowly, and you care about it four times a
 year. Hand-entering a few rows a quarter beats writing and maintaining a PDF
@@ -1059,17 +1060,13 @@ docker-compose.yml          Defines both containers, the network, mounts, volume
 Makefile                    Shortcuts: make up / logs / db / test / ingest / health
 .env                        Your secrets and settings (gitignored, never committed)
 .env.example                Template for .env, safe to commit
-FinSight-Design-Plan.md     The original plan this was built from
-README.md                   Quick start and status
-docs/DATA-SOURCES.md        Research on all 5 institutions' export formats — read
-                              this before writing any parser
+README.md                   Quick start, status, and a worked example
 docs/HOW-IT-WORKS.md        This document
 
 db/init/01_init.sql         Enables the pgvector extension. Runs once, ever.
 
 inbox/                      Drop zone. One folder per institution. Gitignored.
   capital_one/                ← the only automated source
-  vanguard/  fidelity/  morgan_stanley/   ← kept but unused; see §1.1
 
 .github/workflows/
   tests.yml                 CI: migrations from empty, drift check, tests — see §8
@@ -1105,9 +1102,8 @@ backend/
       pipeline.py           ★★ The orchestrator. The most important file here.
       parsers/
         capital_one.py      ✅ CSV, implemented and tested — the only parser.
-                              The DCU, Vanguard, Fidelity and Morgan Stanley
-                              stubs were deleted 2026-09-01; they had never run.
-                              Their export formats live in docs/DATA-SOURCES.md.
+                              Stub parsers for the other account types were
+                              deleted; they had never run. See §1.1 for why.
 
     classification/
       rules.py              Regex → category. The Phase 1 categorizer.
@@ -1149,10 +1145,10 @@ been ingested yet.
 | Rule-based categorizer, 17-bucket taxonomy | ✅ Done, tested — rules beat issuer labels, `travel` bucket added |
 | REST endpoints | ✅ Done |
 | RAG chat with routing | ✅ Both routes verified on synthetic data |
-| DCU / Vanguard / Fidelity / Morgan Stanley parsers | ⬜ Descoped — stubs deleted 2026-09-01, see §1.1 |
-| Manual holdings entry (Vanguard / Fidelity / Morgan Stanley) | ⬜ Not started — the remaining half of net worth |
-| Cash balances in net worth | ⬜ Descoped with the DCU parser |
-| Vanguard / Fidelity / Morgan Stanley parsers | ⬜ Descoped, see §1.1 |
+| Parsers for the other account types | ⬜ Descoped — stubs deleted, see §1.1 |
+| Manual holdings entry | ⬜ Not started — the remaining half of net worth |
+| Cash balances in net worth | ⬜ Descoped with the checking-account parser |
+| Investment account parsers | ⬜ Descoped, see §1.1 |
 | All PDF parsers | ⬜ Descoped — optional backfill only |
 | scikit-learn categorizer | ⬜ Dropped, see §1.1 |
 | Scheduled jobs (weekly summary, anomaly detection) | ⬜ Not started |

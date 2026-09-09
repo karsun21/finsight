@@ -26,8 +26,8 @@ def test_same_transaction_from_csv_and_pdf_hashes_identically():
 
 
 def test_different_amounts_do_not_collide():
-    a = transaction_hash("DCU", date(2026, 3, 4), Decimal("-10.00"), "COFFEE")
-    b = transaction_hash("DCU", date(2026, 3, 4), Decimal("-10.01"), "COFFEE")
+    a = transaction_hash("Test Bank", date(2026, 3, 4), Decimal("-10.00"), "COFFEE")
+    b = transaction_hash("Test Bank", date(2026, 3, 4), Decimal("-10.01"), "COFFEE")
     assert a != b
 
 
@@ -52,7 +52,7 @@ def _digests_for(descriptions):
 def test_occurrence_zero_is_the_base_digest_unchanged():
     """The overwhelmingly common case must hash exactly as it did before
     occurrence indexing existed."""
-    base = transaction_hash("DCU", date(2026, 3, 4), Decimal("-10.00"), "COFFEE")
+    base = transaction_hash("Test Bank", date(2026, 3, 4), Decimal("-10.00"), "COFFEE")
     assert occurrence_hash(base, 0) == base
 
 

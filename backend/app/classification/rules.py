@@ -45,7 +45,7 @@ CATEGORIES: frozenset[str] = frozenset(
 #: Categories that move money without being spending. Monthly rollups must
 #: exclude these: a credit card statement carries one payment per cycle, and
 #: netting it against the charges inverts the answer — May→June once read as
-#: cash flow *rising* $135.77 while spending actually *fell* $399.
+#: cash flow *rising* while spending had actually fallen.
 #: `cash` is deliberately absent — an ATM withdrawal is money going out.
 NON_SPEND_CATEGORIES: frozenset[str] = frozenset(
     {
